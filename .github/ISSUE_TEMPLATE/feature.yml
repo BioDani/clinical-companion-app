@@ -1,0 +1,45 @@
+name: "Feature / User Story"
+description: "Template for defining new user stories and features."
+title: "[FEATURE] "
+labels: ["feature"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ### User Story Details
+
+  - type: textarea
+    id: description
+    attributes:
+      label: "Description"
+      description: "As a [User Role], I want to [Desired Functionality], So that [Benefit or Goal]."
+      placeholder: |
+        As a...
+        I want to...
+        So that...
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: "Acceptance Criteria"
+      description: "List the conditions required for this story to be accepted."
+      placeholder: |
+        - [ ] Criterion 1
+        - [ ] Criterion 2
+        - [ ] Criterion 3
+    validations:
+      required: true
+
+  - type: textarea
+    id: definition-of-done
+    attributes:
+      label: "Technical Notes / Definition of Done"
+      description: "Checklist for technical completeness and quality standards."
+      value: |
+        - [ ] Code has been reviewed by a teammate.
+        - [ ] Unit tests are passing.
+        - [ ] Documentation updated in Wiki/Pages.
+    validations:
+      required: false
