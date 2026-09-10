@@ -1,7 +1,7 @@
-name: "Feature / User Story"
-description: "Template for defining new user stories and features."
-title: "[FEATURE] "
-labels: ["feature"]
+name: "User Story"
+description: "Template for defining new user stories or feature requirements."
+title: "[US] "
+labels: ["user story", "feature"]
 body:
   - type: markdown
     attributes:
