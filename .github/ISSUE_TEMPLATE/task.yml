@@ -1,0 +1,39 @@
+name: "Task"
+description: "Template for technical chores, refactoring, or infrastructure tasks."
+title: "[TASK] "
+labels: ["task"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ### Technical Task Details
+
+  - type: textarea
+    id: description
+    attributes:
+      label: "Task Description"
+      description: "Describe the technical work that needs to be done."
+      placeholder: "Setup CI/CD pipeline, refactor authentication module, etc."
+    validations:
+      required: true
+
+  - type: textarea
+    id: checklist
+    attributes:
+      label: "Action Items"
+      description: "List the sub-tasks or steps to complete."
+      placeholder: |
+        - [ ] Task 1
+        - [ ] Task 2
+    validations:
+      required: true
+
+  - type: textarea
+    id: definition-of-done
+    attributes:
+      label: "Definition of Done"
+      value: |
+        - [ ] Code has been reviewed by a teammate.
+        - [ ] Unit tests are passing.
+    validations:
+      required: false
