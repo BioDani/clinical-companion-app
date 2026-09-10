@@ -1,5 +1,5 @@
 name: "Bug"
-description: "Report a bug or unexpected behavior."
+description: "Template for reporting bugs or unexpected system behaviors."
 title: "[BUG] "
 labels: ["bug"]
 body:
@@ -12,7 +12,8 @@ body:
     id: description
     attributes:
       label: "Bug Description"
-      description: "A clear and concise description of what the bug is."
+      description: "Clear description of the issue."
+      placeholder: "Describe the unexpected behavior..."
     validations:
       required: true
 
@@ -20,9 +21,10 @@ body:
     id: steps-to-reproduce
     attributes:
       label: "Steps to Reproduce"
+      description: "List the steps to recreate the bug."
       placeholder: |
         1. Go to '...'
-        2. Click on '....'
+        2. Click on '...'
         3. See error
     validations:
       required: true
@@ -30,7 +32,9 @@ body:
   - type: textarea
     id: expected-behavior
     attributes:
-      label: "Expected Behavior"
-      description: "What you expected to happen."
+      label: "Expected vs Actual Behavior"
+      placeholder: |
+        - Expected: ...
+        - Actual: ...
     validations:
       required: true
