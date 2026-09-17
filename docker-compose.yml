@@ -1,0 +1,45 @@
+name: clinical-companion
+
+services:
+  agent:
+    build:
+      context: ./agent
+    container_name: clinical-companion-agent
+    ports:
+      - "8000:8000"
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+      HF_MODEL: ${HF_MODEL:-Qwen/Qwen2.5-72B-Instruct}
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:v0.11.3
+    container_name: clinical-companion-ui
+    ports:
+      - "3000:8080"
+    environment:
+      OPENAI_API_BASE_URL: http://agent:8000/v1
+      OPENAI_API_KEY: not-needed
+      ENABLE_OLLAMA_API: "false"
+      WEBUI_AUTH: "false"
+    volumes:
+      - open-webui-data:/app/backend/data
+    depends_on:
+      agent:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  open-webui-data:
