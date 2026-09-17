@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from ..auth import Principal, require_principal
 from ..config import AGENT_MODEL_ID
 from ..dependencies import get_session_id, run_companion
 
@@ -34,7 +35,9 @@ def _completion_id() -> str:
 
 
 @router.get("/models")
-def list_models() -> dict[str, Any]:
+def list_models(
+    _principal: Annotated[Principal, Depends(require_principal)],
+) -> dict[str, Any]:
     return {
         "object": "list",
         "data": [
@@ -52,13 +55,14 @@ def list_models() -> dict[str, Any]:
 def chat_completions(
     body: ChatCompletionRequest,
     session_id: Annotated[str | None, Depends(get_session_id)],
+    principal: Annotated[Principal, Depends(require_principal)],
 ):
     if not body.messages:
         raise HTTPException(status_code=400, detail="messages is required")
 
     # Open WebUI sends the full history each turn; a fresh thread avoids
     # duplicating messages in MemorySaver. Pass X-Session-Id to persist.
-    thread_id = session_id or body.user or str(uuid.uuid4())
+    thread_id = session_id or body.user or principal.user_id
     text = run_companion(body.messages, thread_id)
     created = int(time.time())
     completion_id = _completion_id()

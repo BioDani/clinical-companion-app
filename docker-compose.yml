@@ -1,6 +1,45 @@
 name: clinical-companion
 
 services:
+  rbac:
+    # Identity service: https://github.com/ingjohnguerrero/fastapi_rbac
+    build:
+      context: https://github.com/ingjohnguerrero/fastapi_rbac.git#main
+    container_name: clinical-companion-rbac
+    ports:
+      - "8001:8000"
+    environment:
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-1440}
+      # New file so init can seed ADMIN_* from .env. fastapi_rbac will not
+      # update an existing admin hash (old rbac.db stays unused on the volume).
+      DATABASE_URL: sqlite:////data/rbac-lab.db
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@example.com}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env}
+    volumes:
+      - rbac-data:/data
+    labels:
+      - dev.orbstack.http-port=8000
+    command:
+      - /bin/sh
+      - -c
+      - python -m app.cli init && exec uvicorn app.main:app --host 0.0.0.0 --port 8000
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 25s
+    restart: unless-stopped
+
   agent:
     build:
       context: ./agent
@@ -10,6 +49,13 @@ services:
     environment:
       HF_TOKEN: ${HF_TOKEN:-}
       HF_MODEL: ${HF_MODEL:-Qwen/Qwen2.5-72B-Instruct}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+    labels:
+      - dev.orbstack.http-port=8000
+    depends_on:
+      rbac:
+        condition: service_healthy
     healthcheck:
       test:
         [
@@ -31,15 +77,26 @@ services:
       - "3000:8080"
     environment:
       OPENAI_API_BASE_URL: http://agent:8000/v1
-      OPENAI_API_KEY: not-needed
       ENABLE_OLLAMA_API: "false"
+      ENABLE_OPENAI_API: "true"
+      ENABLE_PERSISTENT_CONFIG: "false"
       WEBUI_AUTH: "false"
+      RBAC_URL: http://rbac:8000
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env}
     volumes:
+      - ./scripts/open-webui-entrypoint.py:/open-webui-entrypoint.py:ro
       - open-webui-data:/app/backend/data
+    labels:
+      - dev.orbstack.http-port=8080
+    command: ["python3", "/open-webui-entrypoint.py"]
     depends_on:
+      rbac:
+        condition: service_healthy
       agent:
         condition: service_healthy
     restart: unless-stopped
 
 volumes:
   open-webui-data:
+  rbac-data:

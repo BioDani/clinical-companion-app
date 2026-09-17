@@ -24,3 +24,16 @@ def hf_token() -> str:
 
 def hf_model() -> str:
     return (os.getenv("HF_MODEL") or "").strip() or DEFAULT_HF_MODEL
+
+
+def jwt_secret() -> str:
+    secret = (os.getenv("JWT_SECRET") or "").strip()
+    if not secret:
+        raise ValueError(
+            "JWT_SECRET is required so the agent can verify tokens from rbac"
+        )
+    return secret
+
+
+def jwt_algorithm() -> str:
+    return (os.getenv("JWT_ALGORITHM") or "").strip() or "HS256"
