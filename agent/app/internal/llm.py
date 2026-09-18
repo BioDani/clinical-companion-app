@@ -43,9 +43,18 @@ def _content_text(content: object) -> str:
     return "" if content is None else str(content)
 
 
+def _chat_content(text: str) -> list[dict[str, str]]:
+    # smolagents concatenates consecutive same-role messages and requires
+    # list content for that merge (Open WebUI often sends two user turns).
+    return [{"type": "text", "text": text}]
+
+
 def complete(messages: list[BaseMessage]) -> str:
     payload = [
-        ChatMessage(role=_ROLE.get(msg.type, "user"), content=_content_text(msg.content))
+        ChatMessage(
+            role=_ROLE.get(msg.type, "user"),
+            content=_chat_content(_content_text(msg.content)),
+        )
         for msg in messages
     ]
     result = get_model().generate(payload)

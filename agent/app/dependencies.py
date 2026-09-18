@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Annotated, Any
 
 from fastapi import Header, HTTPException
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from .internal.graph import companion
+
+logger = logging.getLogger(__name__)
 
 
 def get_session_id(x_session_id: Annotated[str | None, Header()] = None) -> str | None:
@@ -56,7 +59,9 @@ def run_companion(messages: list, thread_id: str) -> str:
             {"configurable": {"thread_id": thread_id}},
         )
     except ValueError as exc:
+        logger.exception("LLM configuration error")
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
+        logger.exception("Agent graph failed")
         raise HTTPException(status_code=502, detail=f"Agent failed: {exc}") from exc
     return last_assistant(result.get("messages") or [])

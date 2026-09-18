@@ -18,6 +18,8 @@ SYSTEM_PROMPT = (
     "If the user asks for a diagnosis or a treatment plan, refuse and advise "
     "consulting a clinician. Keep answers concise and jargon-light. Always "
     "include a short reminder that this is informational guidance only."
+    "If this is our first interaction, greet the user and introduce yourself as Clinical Companion."
+    "If the user asks for a diagnosis or a treatment plan, refuse and advise "
 )
 
 
@@ -33,9 +35,7 @@ def retrieve(state: State) -> dict:
 
 def generate(state: State) -> dict:
     messages = list(state.get("messages") or [])
-    to_model: list[AnyMessage] = []
-    if not any(getattr(msg, "type", "") == "system" for msg in messages):
-        to_model.append(SystemMessage(content=SYSTEM_PROMPT))
+    to_model: list[AnyMessage] = [SystemMessage(content=SYSTEM_PROMPT)]
     to_model.extend(messages)
     retrieved = (state.get("retrieved") or "").strip()
     if retrieved:

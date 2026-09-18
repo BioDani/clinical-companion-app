@@ -55,14 +55,16 @@ def list_models(
 def chat_completions(
     body: ChatCompletionRequest,
     session_id: Annotated[str | None, Depends(get_session_id)],
-    principal: Annotated[Principal, Depends(require_principal)],
+    _principal: Annotated[Principal, Depends(require_principal)],
 ):
     if not body.messages:
         raise HTTPException(status_code=400, detail="messages is required")
 
-    # Open WebUI sends the full history each turn; a fresh thread avoids
-    # duplicating messages in MemorySaver. Pass X-Session-Id to persist.
-    thread_id = session_id or body.user or principal.user_id
+    # Open WebUI sends the full history each turn. Reusing body.user /
+    # principal.user_id as the LangGraph thread duplicates consecutive
+    # user messages and smolagents raises "wrong content". A fresh thread
+    # keeps MemorySaver from concatenating; pass X-Session-Id to persist.
+    thread_id = session_id or str(uuid.uuid4())
     text = run_companion(body.messages, thread_id)
     created = int(time.time())
     completion_id = _completion_id()
