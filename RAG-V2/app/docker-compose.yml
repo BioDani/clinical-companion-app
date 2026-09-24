@@ -1,0 +1,15 @@
+services:
+  rag:
+    build: .
+    container_name: local-rag-huggingface
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - huggingface_cache:/root/.cache/huggingface
+    stdin_open: true
+    tty: true
+    command: python -u app/rag.py
+
+volumes:
+  huggingface_cache:

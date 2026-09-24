@@ -1,0 +1,11 @@
+langchain
+langchain-classic
+langchain-community
+langchain-core
+langchain-chroma
+langchain-huggingface
+huggingface_hub
+sentence-transformers
+rank-bm25
+pypdf
+python-dotenv
