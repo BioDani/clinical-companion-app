@@ -1,4 +1,4 @@
-"""Router graph: guardrail, book-backed answers, and BMI."""
+"""Router graph: guardrail, RAG quotes, and tools."""
 
 from __future__ import annotations
 
@@ -28,11 +28,19 @@ def _config() -> dict:
     return {"configurable": {"thread_id": f"unit-{uuid.uuid4().hex}"}}
 
 
+def _assistant(result: dict) -> list[str]:
+    return [
+        message.content
+        for message in result["messages"]
+        if getattr(message, "type", "") == "ai"
+    ]
+
+
 def test_compiled_graph_routes_through_guard_and_answer():
     drawn = build_graph().get_graph()
     nodes = set(drawn.nodes)
     edges = {(edge.source, edge.target) for edge in drawn.edges}
-    assert {"guard", "plan", "search", "grade", "answer", "Dangerous"} <= nodes
+    assert {"guard", "plan", "search", "grade", "answer", "Dangerous", "Tools"} <= nodes
     assert ("__start__", "guard") in edges
     assert ("plan", "search") in edges
     assert ("search", "grade") in edges
@@ -40,6 +48,8 @@ def test_compiled_graph_routes_through_guard_and_answer():
     assert ("grade", "plan") in edges
     assert ("answer", "__end__") in edges
     assert ("Dangerous", "__end__") in edges
+    assert ("Tools", "plan") in edges
+    assert ("Tools", "__end__") in edges
 
 
 def test_diagnosis_is_refused_without_calling_the_model(monkeypatch: pytest.MonkeyPatch):
@@ -74,6 +84,9 @@ def test_diet_question_answers_from_book_passages(monkeypatch: pytest.MonkeyPatc
     assert result["retrieved"] == "page 3: fiber at breakfast"
     assert calls[-1]["max_tokens"] == 1024
     assert calls[-1]["messages"][0].content == ANSWER_PROMPT
+    assert "English quotation" in ANSWER_PROMPT
+    assert "Do not answer with page N:" in ANSWER_PROMPT
+    assert "BMI" not in ANSWER_PROMPT
     assert calls[-1]["messages"][-1].content == "Retrieved context:\npage 3: fiber at breakfast"
     assert result["messages"][-1].content == "a quoted answer"
     assert result["issues"] == []
@@ -130,7 +143,9 @@ def test_next_question_starts_a_fresh_search(monkeypatch: pytest.MonkeyPatch):
     assert second["searches"] == 1
 
 
-def test_height_and_weight_include_bmi_with_the_book(monkeypatch: pytest.MonkeyPatch):
+def test_height_and_weight_with_habits_returns_bmi_then_the_quote(
+    monkeypatch: pytest.MonkeyPatch,
+):
     replies = iter(["movement habits", "SUFFICIENT", "grounded"])
     monkeypatch.setattr(
         "app.internal.book.BookIndex.search",
@@ -145,9 +160,25 @@ def test_height_and_weight_include_bmi_with_the_book(monkeypatch: pytest.MonkeyP
         _config(),
     )
 
-    assert result["retrieved"].startswith("BMI 25.9 (overweight)")
-    assert "page 4: daily movement" in result["retrieved"]
-    assert result["messages"][-1].content == "grounded"
+    assert _assistant(result) == ["BMI 25.9 (overweight)", "grounded"]
+    assert result["retrieved"] == "page 4: daily movement"
+
+
+def test_height_and_weight_without_a_book_question_returns_bmi_only(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    def fail_search(self, query):
+        raise AssertionError("book should not be searched")
+
+    def fail_complete(messages, max_tokens=512):
+        raise AssertionError("model should not be called")
+
+    monkeypatch.setattr("app.internal.book.BookIndex.search", fail_search)
+    monkeypatch.setattr("app.internal.graph.complete", fail_complete)
+    result = companion.invoke(_state("I weigh 82 kg and I am 1.78 m."), _config())
+
+    assert _assistant(result) == ["BMI 25.9 (overweight)"]
+    assert result["retrieved"] == ""
 
 
 def test_smalltalk_and_end_follow_the_model_label(monkeypatch: pytest.MonkeyPatch):

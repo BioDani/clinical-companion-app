@@ -1,4 +1,4 @@
-"""Clinical Companion router: guardrail, book answers, and BMI."""
+"""Clinical Companion router: guardrail, RAG quotes, and tools."""
 
 from __future__ import annotations
 
@@ -15,12 +15,13 @@ from .book import BookIndex
 from .llm import complete
 
 ROUTING_PROMPT = (
-    "You are a Router, that analyzes the input query and chooses 4 options:"
+    "You are a Router, that analyzes the input query and chooses 5 options:"
     "SMALLTALK: If the user input is small talk, like greetings and good byes."
-    "INFORMATIONAL: If the user input is a question about diet, exercise, or healthy habits."
+    "RAG: If the user input is a question about diet, exercise, or healthy habits."
+    "TOOLS: If the user input asks for a measurement a tool can compute, such as height and weight."
     "DANGEROUS: If the user input is a dangerous query, like asking for a diagnosis or a treatment plan."
-    "END: Default, when its neither SMALLTALK, INFORMATIONAL, or DANGEROUS."
-    "The output should only be just one word out of the possible 4 : SMALLTALK, INFORMATIONAL, DANGEROUS, END."
+    "END: Default, when its neither SMALLTALK, RAG, TOOLS, or DANGEROUS."
+    "The output should only be just one word out of the possible 5 : SMALLTALK, RAG, TOOLS, DANGEROUS, END."
 )
 
 SMALL_TALK_PROMPT = (
@@ -42,10 +43,13 @@ GRADE_PROMPT = (
 
 ANSWER_PROMPT = (
     "You are Clinical Companion, an informational wellness assistant. "
-    "Explain the answer in the user's words, in a few short paragraphs, using only the retrieved passages. "
-    "Then include one or two quotations copied from those passages and name each page. "
-    "If a BMI line is present, include it. "
-    "If the retrieved context says the book does not cover the question, say that. "
+    "Choose the retrieved passage that best matches the question. "
+    "Reply with that passage as one short English quotation: a close translation, "
+    "or a slightly clearer elaboration of the same lines. "
+    "The whole reply is that quotation. "
+    "Do not invent claims that are not in the retrieved text. "
+    "Do not answer with page N: text, a keyword list, or the Spanish source. "
+    "If the retrieved context says the book does not cover the question, say that in English. "
     "Do not diagnose or prescribe. Remind the user this is informational guidance only."
 )
 
@@ -55,9 +59,9 @@ REFUSAL = (
     "This is informational guidance only."
 )
 
-_LABELS = {"SMALLTALK", "INFORMATIONAL", "DANGEROUS", "END"}
+_LABELS = {"SMALLTALK", "RAG", "TOOLS", "DANGEROUS", "END"}
 _DANGEROUS = ("diagnos", "prescribe", "treatment plan", "what medication", "do i have")
-_INFORMATIONAL = ("diet", "exercise", "habit", "sleep", "nutrition")
+_RAG = ("diet", "exercise", "habit", "sleep", "nutrition")
 
 
 class RouterAgentState(TypedDict):
@@ -70,12 +74,28 @@ class RouterAgentState(TypedDict):
     coverage: str
 
 
-def guardrail(user_text: str) -> str | None:
+def _needs_rag(question: str) -> bool:
+    text = question.lower()
+    return any(phrase in text for phrase in _RAG)
+
+
+def _tool_readings(question: str, tools: list | None = None) -> list[str]:
+    readings: list[str] = []
+    for tool in tools if tools is not None else (BmiTool(),):
+        reading = tool.from_text(question)
+        if reading:
+            readings.append(reading)
+    return readings
+
+
+def guardrail(user_text: str, tools: list | None = None) -> str | None:
     text = user_text.lower()
     if any(phrase in text for phrase in _DANGEROUS):
         return "DANGEROUS"
-    if any(phrase in text for phrase in _INFORMATIONAL) or BmiTool().from_text(user_text):
-        return "INFORMATIONAL"
+    if _tool_readings(user_text, tools):
+        return "TOOLS"
+    if _needs_rag(user_text):
+        return "RAG"
     return None
 
 
@@ -120,10 +140,9 @@ def _merge_passages(*chunks: str) -> str:
     return "\n\n".join(seen)
 
 
-class InformationalAgent:
-    def __init__(self, book: BookIndex | None = None, bmi: BmiTool | None = None):
+class RagAgent:
+    def __init__(self, book: BookIndex | None = None):
         self.book = book or BookIndex()
-        self.bmi = bmi or BmiTool()
 
     def plan(self, state: RouterAgentState) -> dict:
         question = _latest_human(state)
@@ -152,10 +171,7 @@ class InformationalAgent:
         query = (state.get("search_query") or "").strip() or question
         passages = self.book.search(query)
         attempt = int(state.get("searches") or 0) + 1
-        prefix = ""
-        if attempt == 1:
-            prefix = self.bmi.from_text(question) or ""
-        retrieved = _merge_passages(prefix, state.get("retrieved") or "", passages)
+        retrieved = _merge_passages(state.get("retrieved") or "", passages)
         return {"retrieved": retrieved, "searches": attempt}
 
     def grade(self, state: RouterAgentState) -> dict:
@@ -186,6 +202,22 @@ class InformationalAgent:
         return {"messages": [AIMessage(content=text)]}
 
 
+class ToolsAgent:
+    def __init__(self, tools: list | None = None):
+        self.tools = list(tools) if tools is not None else [BmiTool()]
+
+    def respond(self, state: RouterAgentState) -> dict:
+        lines = _tool_readings(_latest_human(state), self.tools)
+        if not lines:
+            return {}
+        return {"messages": [AIMessage(content="\n".join(lines))]}
+
+    def choose_next(self, state: RouterAgentState) -> str:
+        if _needs_rag(_latest_human(state)):
+            return "plan"
+        return "end"
+
+
 class _ChatModel:
     """`.invoke` adapter so the router can call the smolagents `complete` helper."""
 
@@ -200,24 +232,27 @@ class RouterAgent:
         self.model = model
         self.debug = debug
         self.dangerous = DangerousAgent()
-        self.informational = InformationalAgent()
+        self.rag = RagAgent()
+        self.tools = ToolsAgent()
 
         router_graph = StateGraph(RouterAgentState)
         router_graph.add_node("guard", self.apply_guard)
         router_graph.add_node("Router", self.call_llm)
         router_graph.add_node("Small_Talk", self.respond_smalltalk)
         router_graph.add_node("Dangerous", self.dangerous.respond)
-        router_graph.add_node("plan", self.informational.plan)
-        router_graph.add_node("search", self.informational.search)
-        router_graph.add_node("grade", self.informational.grade)
-        router_graph.add_node("answer", self.informational.answer)
+        router_graph.add_node("Tools", self.tools.respond)
+        router_graph.add_node("plan", self.rag.plan)
+        router_graph.add_node("search", self.rag.search)
+        router_graph.add_node("grade", self.rag.grade)
+        router_graph.add_node("answer", self.rag.answer)
 
         router_graph.add_conditional_edges(
             "guard",
             lambda state: state["route"],
             {
                 "DANGEROUS": "Dangerous",
-                "INFORMATIONAL": "plan",
+                "TOOLS": "Tools",
+                "RAG": "plan",
                 "ASK_MODEL": "Router",
             },
         )
@@ -226,16 +261,22 @@ class RouterAgent:
             self.find_route,
             {
                 "SMALLTALK": "Small_Talk",
-                "INFORMATIONAL": "plan",
+                "RAG": "plan",
+                "TOOLS": "Tools",
                 "DANGEROUS": "Dangerous",
                 "END": END,
             },
+        )
+        router_graph.add_conditional_edges(
+            "Tools",
+            self.tools.choose_next,
+            {"plan": "plan", "end": END},
         )
         router_graph.add_edge("plan", "search")
         router_graph.add_edge("search", "grade")
         router_graph.add_conditional_edges(
             "grade",
-            self.informational.choose_after_grade,
+            self.rag.choose_after_grade,
             {"plan": "plan", "answer": "answer"},
         )
         router_graph.add_edge("answer", END)
@@ -245,7 +286,7 @@ class RouterAgent:
         self.router_graph = router_graph.compile(checkpointer=MemorySaver())
 
     def apply_guard(self, state: RouterAgentState) -> dict:
-        route = guardrail(_latest_human(state)) or "ASK_MODEL"
+        route = guardrail(_latest_human(state), self.tools.tools) or "ASK_MODEL"
         if self.debug:
             print(f"Guard route {route}")
         return {"route": route}

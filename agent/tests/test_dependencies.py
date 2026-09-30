@@ -14,6 +14,7 @@ from app.dependencies import (
     message_text,
     run_companion,
     to_lc_messages,
+    turn_replies,
 )
 
 
@@ -82,6 +83,33 @@ def test_last_assistant_accepts_duck_typed_ai_message():
     assert last_assistant([HumanMessage(content="q")]) == ""
 
 
+def test_turn_replies_joins_the_tool_reading_and_the_quote():
+    messages = [
+        HumanMessage(content="q"),
+        AIMessage(content="BMI 25.9 (overweight)"),
+        AIMessage(content="We eat in order to give living information."),
+    ]
+    assert turn_replies(messages) == (
+        "BMI 25.9 (overweight)\n\nWe eat in order to give living information."
+    )
+
+
+def test_turn_replies_omits_a_leading_route_label():
+    messages = [
+        HumanMessage(content="older"),
+        AIMessage(content="earlier quote"),
+        HumanMessage(content="q"),
+        AIMessage(content="TOOLS"),
+        AIMessage(content="BMI 25.9 (overweight)"),
+        AIMessage(content="a quote"),
+    ]
+    assert turn_replies(messages) == "BMI 25.9 (overweight)\n\na quote"
+
+
+def test_turn_replies_keeps_a_lone_end_label():
+    assert turn_replies([HumanMessage(content="q"), AIMessage(content="END")]) == "END"
+
+
 def test_run_companion_returns_last_assistant_text(monkeypatch: pytest.MonkeyPatch):
     captured: dict = {}
 
@@ -103,6 +131,22 @@ def test_run_companion_returns_last_assistant_text(monkeypatch: pytest.MonkeyPat
     assert captured["state"]["coverage"] == ""
     assert isinstance(captured["state"]["messages"][0], HumanMessage)
     assert captured["state"]["messages"][0].content == "hi"
+
+
+def test_run_companion_joins_the_tool_reading_and_the_quote(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        "app.dependencies.companion.invoke",
+        lambda state, config: {
+            "messages": [
+                HumanMessage(content="q"),
+                AIMessage(content="TOOLS"),
+                AIMessage(content="BMI 25.9 (overweight)"),
+                AIMessage(content="a quote"),
+            ]
+        },
+    )
+    text = run_companion([SimpleNamespace(role="user", content="hi")], "thread-1")
+    assert text == "BMI 25.9 (overweight)\n\na quote"
 
 
 def test_run_companion_empty_result_is_blank(monkeypatch: pytest.MonkeyPatch):
