@@ -7,6 +7,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY pyproject.toml .
 COPY app/ ./app/
+COPY knowledge/ ./knowledge/
 
 ENV PYTHONUNBUFFERED=1
 EXPOSE 8000

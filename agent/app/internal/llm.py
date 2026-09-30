@@ -17,14 +17,18 @@ _ROLE = {
 }
 
 
-@lru_cache(maxsize=1)
-def get_model() -> InferenceClientModel:
+def _build_model(max_tokens: int) -> InferenceClientModel:
     return InferenceClientModel(
         model_id=hf_model(),
         token=hf_token(),
-        max_tokens=512,
+        max_tokens=max_tokens,
         temperature=0,
     )
+
+
+@lru_cache(maxsize=1)
+def get_model() -> InferenceClientModel:
+    return _build_model(512)
 
 
 def _content_text(content: object) -> str:
@@ -49,7 +53,7 @@ def _chat_content(text: str) -> list[dict[str, str]]:
     return [{"type": "text", "text": text}]
 
 
-def complete(messages: list[BaseMessage]) -> str:
+def complete(messages: list[BaseMessage], max_tokens: int = 512) -> str:
     payload = [
         ChatMessage(
             role=_ROLE.get(msg.type, "user"),
@@ -57,5 +61,6 @@ def complete(messages: list[BaseMessage]) -> str:
         )
         for msg in messages
     ]
-    result = get_model().generate(payload)
+    model = get_model() if max_tokens == 512 else _build_model(max_tokens)
+    result = model.generate(payload)
     return _content_text(getattr(result, "content", result)).strip()
