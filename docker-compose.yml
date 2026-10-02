@@ -51,6 +51,7 @@ services:
       HF_MODEL: ${HF_MODEL:-Qwen/Qwen2.5-72B-Instruct}
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
       JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      TAVILY_API_KEY: ${TAVILY_API_KEY:?Set TAVILY_API_KEY in .env}
     labels:
       - dev.orbstack.http-port=8000
     depends_on:
