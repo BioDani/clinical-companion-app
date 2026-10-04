@@ -18,7 +18,7 @@ Authorize is token-first: rbac puts `sub`, `role`, and `permissions` in an HS256
 
 ## Run
 
-1. Copy the env file and set a Hugging Face token ([create one](https://huggingface.co/settings/tokens); it must start with `hf_`). Also set `JWT_SECRET` and `ADMIN_PASSWORD`:
+1. Copy the env file and set a Hugging Face token ([create one](https://huggingface.co/settings/tokens); it must start with `hf_`). Also set `JWT_SECRET`, `ADMIN_PASSWORD`, and `TAVILY_API_KEY` (a [Tavily](https://tavily.com) key for web search):
 
    ```bash
    cp .env.example .env

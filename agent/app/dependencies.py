@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Annotated, Any
 
 from fastapi import Header, HTTPException
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-from .internal.graph import _LABELS, companion
+from .internal.graph import companion
 
 logger = logging.getLogger(__name__)
 
@@ -52,32 +53,61 @@ def last_assistant(messages: list) -> str:
     return ""
 
 
-def _is_route_label(text: str) -> bool:
+RETRY_REPLY = "I couldn't complete that just now. Please try again."
+
+_HIDDEN_LABELS = {
+    "SMALLTALK",
+    "RAG",
+    "TOOLS",
+    "DANGEROUS",
+    "END",
+    "SUFFICIENT",
+    "INSUFFICIENT",
+    "MISS",
+    "BMI",
+    "KNOWLEDGE",
+    "SAFE",
+}
+
+_ERROR_LEAK = re.compile(r"^\s*_?[A-Za-z]+,\s*error\b", re.IGNORECASE)
+
+
+def _is_hidden_reply(text: str) -> bool:
+    """Route labels and model error dumps are not answers."""
     token = text.strip()
-    if not token:
-        return False
-    if token in _LABELS:
+    if token in _HIDDEN_LABELS:
         return True
-    return " " not in token and "\n" not in token
+    return _ERROR_LEAK.match(token) is not None
 
 
 def turn_replies(messages: list) -> str:
     """Assistant text after the latest human turn.
 
-    A leading route label is omitted when a real reply follows. A lone label,
-    such as END, stays the reply. Several replies are joined by a blank line.
+    Route labels and replies that start like ``_Greeting, error`` are omitted.
+    When that leaves nothing to show, a short retry sentence is returned.
+    Several real replies are joined by a blank line.
     """
-    after: list[str] = []
+    visible: list[str] = []
+    hid_internal = False
     for msg in messages:
         kind = getattr(msg, "type", "")
         if isinstance(msg, HumanMessage) or kind == "human":
-            after = []
+            visible = []
+            hid_internal = False
             continue
         if isinstance(msg, AIMessage) or kind == "ai":
-            after.append(message_text(msg.content))
-    if len(after) >= 2 and _is_route_label(after[0]):
-        after = after[1:]
-    return "\n\n".join(text for text in after if text)
+            text = message_text(msg.content).strip()
+            if not text:
+                continue
+            if _is_hidden_reply(text):
+                hid_internal = True
+                continue
+            visible.append(text)
+    if visible:
+        return "\n\n".join(visible)
+    if hid_internal:
+        return RETRY_REPLY
+    return ""
 
 
 def run_companion(messages: list, thread_id: str) -> str:

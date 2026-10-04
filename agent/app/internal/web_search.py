@@ -1,13 +1,23 @@
 import os
 
 from dotenv import load_dotenv
-from tavily import TavilyClient
 
 load_dotenv()
 
-client = TavilyClient(
-    api_key=os.environ["TAVILY_API_KEY"]
-)
+_client = None
+
+
+def _get_client():
+    """Create the Tavily client on first search."""
+    global _client
+    if _client is None:
+        from tavily import TavilyClient
+
+        api_key = os.environ.get("TAVILY_API_KEY", "").strip()
+        if not api_key:
+            raise ValueError("Set TAVILY_API_KEY")
+        _client = TavilyClient(api_key=api_key)
+    return _client
 
 
 def search_web(query: str) -> list[dict]:
@@ -16,7 +26,7 @@ def search_web(query: str) -> list[dict]:
     if not query or not query.strip():
         raise ValueError("Search query cannot be empty.")
 
-    response = client.search(
+    response = _get_client().search(
         query=query,
         search_depth="advanced",
         max_results=5,
