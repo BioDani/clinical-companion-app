@@ -9,6 +9,7 @@ from fastapi import HTTPException
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from app.dependencies import (
+    RETRY_REPLY,
     get_session_id,
     last_assistant,
     message_text,
@@ -106,8 +107,13 @@ def test_turn_replies_omits_a_leading_route_label():
     assert turn_replies(messages) == "BMI 25.9 (overweight)\n\na quote"
 
 
-def test_turn_replies_keeps_a_lone_end_label():
-    assert turn_replies([HumanMessage(content="q"), AIMessage(content="END")]) == "END"
+def test_turn_replies_replaces_a_lone_end_label():
+    assert turn_replies([HumanMessage(content="q"), AIMessage(content="END")]) == RETRY_REPLY
+
+
+def test_turn_replies_replaces_a_greeting_error_dump():
+    leaked = "_Greeting, error, the model failed to respond"
+    assert turn_replies([HumanMessage(content="q"), AIMessage(content=leaked)]) == RETRY_REPLY
 
 
 def test_run_companion_returns_last_assistant_text(monkeypatch: pytest.MonkeyPatch):
