@@ -11,6 +11,7 @@ from app.internal.graph import (
     ANSWER_PROMPT,
     BOOK_TITLE,
     GENERAL_PROMPT,
+    HABIT_BOUNDARY,
     REFUSAL,
     SMALL_TALK_PROMPT,
     build_graph,
@@ -59,6 +60,7 @@ def test_compiled_graph_routes_through_guard_and_answer():
         "guard",
         "classify",
         "refuse",
+        "habits",
         "smalltalk",
         "bmi",
         "rag_search",
@@ -70,6 +72,7 @@ def test_compiled_graph_routes_through_guard_and_answer():
     } <= nodes
     assert ("__start__", "guard") in edges
     assert ("guard", "refuse") in edges
+    assert ("guard", "habits") in edges
     assert ("guard", "classify") in edges
     assert ("classify", "smalltalk") in edges
     assert ("classify", "bmi") in edges
@@ -79,7 +82,7 @@ def test_compiled_graph_routes_through_guard_and_answer():
     assert ("rag_grade", "web_search") in edges
     assert ("web_search", "web_answer") in edges
     assert ("web_search", "general") in edges
-    for node in ("refuse", "smalltalk", "bmi", "rag_answer", "web_answer", "general"):
+    for node in ("refuse", "habits", "smalltalk", "bmi", "rag_answer", "web_answer", "general"):
         assert (node, "__end__") in edges
 
 
@@ -92,6 +95,31 @@ def test_diagnosis_is_refused_without_calling_the_model(monkeypatch: pytest.Monk
 
     assert result["messages"][-1].content == REFUSAL
     assert result["issues"] == ["Do I have diabetes?"]
+    assert result["retrieved"] == ""
+
+
+def test_what_to_take_stops_before_search_and_names_no_drug(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    def fail_complete(messages, max_tokens=512):
+        raise AssertionError("model should not be called")
+
+    def fail_search(self, query):
+        raise AssertionError("book should not be searched")
+
+    def fail_web(query):
+        raise AssertionError("web should not be searched")
+
+    monkeypatch.setattr("app.internal.graph.complete", fail_complete)
+    monkeypatch.setattr("app.internal.book.BookIndex.search", fail_search)
+    monkeypatch.setattr("app.internal.web_search.search_web", fail_web)
+    result = companion.invoke(_state("what should I take for Alzheimer?"), _config())
+
+    answer = result["messages"][-1].content
+    assert answer == HABIT_BOUNDARY
+    assert "donepezil" not in answer.lower()
+    assert "memantine" not in answer.lower()
+    assert result["issues"] == ["what should I take for Alzheimer?"]
     assert result["retrieved"] == ""
 
 

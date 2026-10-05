@@ -56,6 +56,8 @@ ANSWER_PROMPT = (
     "Do not include page numbers or a bibliography. "
     "A reference is added after your reply. "
     "Do not diagnose or prescribe. "
+    "Do not name a medication, a dose, or a treatment regimen. "
+    "If the passages mention drugs, leave them out. "
     "Remind the user this is informational guidance only."
 )
 
@@ -67,6 +69,8 @@ WEB_ANSWER_PROMPT = (
     "Prefer relevant and authoritative sources when possible. "
     "For current or recent information, consider the source dates when they are available. "
     "Do not diagnose or prescribe. "
+    "Do not name a medication, a dose, or a treatment regimen. "
+    "If the sources mention drugs, leave them out and keep only lifestyle habits. "
     "Keep the answer concise and clearly distinguish information from medical advice. "
     "This is informational guidance only."
 )
@@ -77,6 +81,7 @@ GENERAL_PROMPT = (
     "Answer from general knowledge. "
     "Say that this is general knowledge, not a citation from the book or the web. "
     "Do not diagnose or prescribe. "
+    "Do not name a medication, a dose, or a treatment regimen. "
     "Keep the answer concise. "
     "Remind the user this is informational guidance only."
 )
@@ -87,6 +92,14 @@ REFUSAL = (
     "This is informational guidance only."
 )
 
+HABIT_BOUNDARY = (
+    "I can't recommend medication or a treatment plan. "
+    "Please contact a clinician or specialist for this question. "
+    "I can talk about general lifestyle habits that support day-to-day wellbeing, "
+    "such as sleep, movement, and eating patterns. "
+    "This is informational guidance only."
+)
+
 BOOK_TITLE = "Dr. Carlos Jaramillo, Pilares"
 
 _DANGEROUS = (
@@ -94,7 +107,29 @@ _DANGEROUS = (
     "prescribe",
     "treatment plan",
     "what medication",
+    "which medication",
     "do i have",
+)
+
+_TREATMENT = (
+    "what should i take",
+    "what can i take",
+    "what do i take",
+    "what to take",
+    "should i take",
+    "what medicine",
+    "which medicine",
+    "what drug",
+    "which drug",
+    "medicine for",
+    "medication for",
+    "drug for",
+    "que debo tomar",
+    "qué debo tomar",
+    "que puedo tomar",
+    "qué puedo tomar",
+    "medicamento",
+    "medicina para",
 )
 
 _GREETINGS = {
@@ -129,10 +164,12 @@ class RouterAgentState(TypedDict):
 
 
 def guardrail(user_text: str) -> str | None:
-    """Return DANGEROUS when the message asks for a diagnosis or treatment."""
+    """Return DANGEROUS or TREATMENT before any model or search call."""
     text = user_text.lower()
     if any(phrase in text for phrase in _DANGEROUS):
         return "DANGEROUS"
+    if any(phrase in text for phrase in _TREATMENT):
+        return "TREATMENT"
     return None
 
 
@@ -217,15 +254,26 @@ def _with_footer(text: str, footer: str) -> str:
     return f"{body}\n\n{footer}"
 
 
+def _stop_with(state: RouterAgentState, content: str) -> dict:
+    question = _latest_human(state)
+    update: dict = {"messages": [AIMessage(content=content)]}
+    if question:
+        update["issues"] = [question]
+    return update
+
+
 class DangerousAgent:
-    """Handle requests that require diagnosis or treatment."""
+    """Handle requests that require a diagnosis."""
 
     def respond(self, state: RouterAgentState) -> dict:
-        question = _latest_human(state)
-        update: dict = {"messages": [AIMessage(content=REFUSAL)]}
-        if question:
-            update["issues"] = [question]
-        return update
+        return _stop_with(state, REFUSAL)
+
+
+class HabitBoundaryAgent:
+    """Refuse medication and treatment, and offer lifestyle habits only."""
+
+    def respond(self, state: RouterAgentState) -> dict:
+        return _stop_with(state, HABIT_BOUNDARY)
 
 
 class RagAgent:
@@ -378,6 +426,7 @@ class RouterAgent:
         self.model = model
         self.debug = debug
         self.dangerous = DangerousAgent()
+        self.habits = HabitBoundaryAgent()
         self.rag = RagAgent()
         self.tools = ToolsAgent()
         self.web = WebSearchAgent()
@@ -386,6 +435,7 @@ class RouterAgent:
         graph = StateGraph(RouterAgentState)
         graph.add_node("guard", self.apply_guard)
         graph.add_node("refuse", self.dangerous.respond)
+        graph.add_node("habits", self.habits.respond)
         graph.add_node("classify", self.classify)
         graph.add_node("smalltalk", self.respond_smalltalk)
         graph.add_node("bmi", self.tools.respond)
@@ -399,7 +449,7 @@ class RouterAgent:
         graph.add_conditional_edges(
             "guard",
             lambda state: state["route"],
-            {"DANGEROUS": "refuse", "SAFE": "classify"},
+            {"DANGEROUS": "refuse", "TREATMENT": "habits", "SAFE": "classify"},
         )
         graph.add_conditional_edges(
             "classify",
@@ -417,7 +467,7 @@ class RouterAgent:
             self.web.choose_after_search,
             {"web_answer": "web_answer", "general": "general"},
         )
-        for node in ("refuse", "smalltalk", "bmi", "rag_answer", "web_answer", "general"):
+        for node in ("refuse", "habits", "smalltalk", "bmi", "rag_answer", "web_answer", "general"):
             graph.add_edge(node, END)
         graph.set_entry_point("guard")
         self.router_graph = graph.compile(checkpointer=MemorySaver())
