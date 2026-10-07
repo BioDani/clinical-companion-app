@@ -17,7 +17,7 @@ from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 
 from .bmi import BmiTool
-from .book import BookIndex
+from .book import BookIndex, format_book_reference
 from .llm import complete
 
 
@@ -51,8 +51,10 @@ GRADE_PROMPT = (
 
 ANSWER_PROMPT = (
     "You are Clinical Companion, an informational wellness assistant. "
-    "Elaborate a short English answer from the retrieved passages. "
-    "Do not invent claims that are not in the retrieved text. "
+    "Answer ONLY from the retrieved passages below. "
+    "If the passages do not contain enough information to answer the question, "
+    "say exactly: 'The uploaded documents do not cover this topic.' "
+    "Do not invent, speculate, or add claims from your training data. "
     "Do not include page numbers or a bibliography. "
     "A reference is added after your reply. "
     "Do not diagnose or prescribe. "
@@ -148,13 +150,13 @@ _GREETINGS = {
     "what can you do",
 }
 
-_PAGE = re.compile(r"\bpage (\d+)\b")
 _BMI_WORD = re.compile(r"\bbmi\b|body mass", re.IGNORECASE)
 
 
 class RouterAgentState(TypedDict):
     messages: Annotated[list[AnyMessage], add_messages]
     retrieved: str
+    book_sources: list[dict]
     web_sources: list[dict]
     issues: Annotated[list[str], operator.add]
     route: str
@@ -235,18 +237,6 @@ def _first_word(text: str) -> str:
     return line.split()[0].strip(".,:;").upper()
 
 
-def format_book_reference(retrieved: str) -> str:
-    """Cite the ebook pages already tagged on the retrieved passages."""
-    pages: list[str] = []
-    for page in _PAGE.findall(retrieved or ""):
-        if page not in pages:
-            pages.append(page)
-    if not pages:
-        return ""
-    listed = ", ".join(f"page {page}" for page in pages)
-    return f"### Reference\n\n- {BOOK_TITLE}, {listed}"
-
-
 def _with_footer(text: str, footer: str) -> str:
     body = text.rstrip()
     if not footer:
@@ -283,7 +273,7 @@ class RagAgent:
         self.book = book or BookIndex()
 
     def search(self, state: RouterAgentState) -> dict:
-        """Plan Spanish keywords and search the ebook once."""
+        """Plan Spanish keywords and search the ebook once via Weaviate."""
         question = _latest_human(state)
         query = _first_line(
             complete(
@@ -293,9 +283,11 @@ class RagAgent:
                 ]
             )
         ) or question
+        passages, sources = self.book.search(query)
         return {
             "search_query": query,
-            "retrieved": self.book.search(query),
+            "retrieved": passages,
+            "book_sources": sources,
             "web_sources": [],
             "searches": 1,
             "coverage": "",
@@ -322,18 +314,22 @@ class RagAgent:
         return "web_search"
 
     def answer(self, state: RouterAgentState) -> dict:
-        """Elaborate from the book and append the page reference."""
+        """Elaborate from the book and append the source citation."""
         messages: list[AnyMessage] = [SystemMessage(content=ANSWER_PROMPT)]
         messages.extend(state.get("messages") or [])
         retrieved = (state.get("retrieved") or "").strip()
         if not retrieved:
-            retrieved = "The book does not cover this question."
+            retrieved = (
+                "The uploaded documents do not contain information about this "
+                "question."
+            )
         messages.append(SystemMessage(content=f"Retrieved context:\n{retrieved}"))
         text = complete(messages, max_tokens=1024)
+        sources = state.get("book_sources") or []
         return {
             "messages": [
                 AIMessage(
-                    content=_with_footer(text, format_book_reference(state.get("retrieved") or ""))
+                    content=_with_footer(text, format_book_reference(sources))
                 )
             ]
         }

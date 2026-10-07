@@ -9,6 +9,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 DEFAULT_HF_MODEL = "Qwen/Qwen2.5-72B-Instruct"
+DEFAULT_HF_EMBEDDING_MODEL = "intfloat/multilingual-e5-large"
+DEFAULT_WEAVIATE_URL = "http://weaviate:8080"
+DEFAULT_WEAVIATE_COLLECTION = "AgenticDocuments"
 AGENT_MODEL_ID = "clinical-companion"
 
 
@@ -24,6 +27,22 @@ def hf_token() -> str:
 
 def hf_model() -> str:
     return (os.getenv("HF_MODEL") or "").strip() or DEFAULT_HF_MODEL
+
+
+def hf_embedding_model() -> str:
+    return (os.getenv("HF_EMBEDDING_MODEL") or "").strip() or DEFAULT_HF_EMBEDDING_MODEL
+
+
+def weaviate_url() -> str:
+    return (os.getenv("WEAVIATE_URL") or "").strip() or DEFAULT_WEAVIATE_URL
+
+
+def weaviate_api_key() -> str:
+    return (os.getenv("WEAVIATE_API_KEY") or "").strip()
+
+
+def weaviate_collection() -> str:
+    return (os.getenv("WEAVIATE_COLLECTION_NAME") or "").strip() or DEFAULT_WEAVIATE_COLLECTION
 
 
 def jwt_secret() -> str:

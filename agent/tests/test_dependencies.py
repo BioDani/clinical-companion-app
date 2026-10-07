@@ -130,6 +130,7 @@ def test_run_companion_returns_last_assistant_text(monkeypatch: pytest.MonkeyPat
     assert text == "done"
     assert captured["config"]["configurable"]["thread_id"] == "thread-1"
     assert captured["state"]["retrieved"] == ""
+    assert captured["state"]["book_sources"] == []
     assert captured["state"]["issues"] == []
     assert captured["state"]["route"] == ""
     assert captured["state"]["search_query"] == ""

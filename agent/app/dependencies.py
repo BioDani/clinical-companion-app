@@ -116,6 +116,7 @@ def run_companion(messages: list, thread_id: str) -> str:
             {
                 "messages": to_lc_messages(messages),
                 "retrieved": "",
+                "book_sources": [],
                 "issues": [],
                 "route": "",
                 "search_query": "",

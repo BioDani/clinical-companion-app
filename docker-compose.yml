@@ -40,6 +40,40 @@ services:
       start_period: 25s
     restart: unless-stopped
 
+  weaviate:
+    # Vector database for RAG citation-aware retrieval.  Embeddings are
+    # computed by the agent via Hugging Face Inference API and stored
+    # with rich metadata (author, title, page, paragraph, etc.).
+    image: cr.weaviate.io/semitechnologies/weaviate:1.27.3
+    container_name: clinical-companion-weaviate
+    ports:
+      - "8080:8080"
+      - "50051:50051"
+    volumes:
+      - weaviate-data:/var/lib/weaviate
+    command:
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --scheme
+      - http
+    environment:
+      - WEAVIATE_API_KEY=${WEAVIATE_API_KEY:-}
+      - ADMIN_PASSWORD=${WEAVIATE_ADMIN_PASSWORD:-admin}
+      - DEFAULT_VECTORIZER_MODULE=none
+      - AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED=true
+      - QUERY_DEFAULTS_LIMIT=25
+      - PERSISTENCE_DATA_PATH=/var/lib/weaviate
+      - CLUSTER_HOSTNAME=node1
+    restart: on-failure:0
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/v1/.well-known/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 25s
+
   agent:
     build:
       context: ./agent
@@ -49,9 +83,12 @@ services:
     environment:
       HF_TOKEN: ${HF_TOKEN:-}
       HF_MODEL: ${HF_MODEL:-Qwen/Qwen2.5-72B-Instruct}
+      HF_EMBEDDING_MODEL: ${HF_EMBEDDING_MODEL:-intfloat/multilingual-e5-large}
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
       JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
       TAVILY_API_KEY: ${TAVILY_API_KEY:?Set TAVILY_API_KEY in .env}
+      WEAVIATE_URL: http://weaviate:8080
+      WEAVIATE_COLLECTION_NAME: ${WEAVIATE_COLLECTION_NAME:-AgenticDocuments}
     labels:
       - dev.orbstack.http-port=8000
     depends_on:
@@ -98,6 +135,27 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  ingest:
+    # One-shot: embed the PDF knowledge base into Weaviate.  Run once at
+    # startup, or re-run with ``docker compose run ingest`` after changing
+    # documents.  Data persists in the weaviate-data volume.
+    build:
+      context: ./agent
+    container_name: clinical-companion-ingest
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+      HF_EMBEDDING_MODEL: ${HF_EMBEDDING_MODEL:-intfloat/multilingual-e5-large}
+      WEAVIATE_URL: http://weaviate:8080
+      WEAVIATE_COLLECTION_NAME: ${WEAVIATE_COLLECTION_NAME:-AgenticDocuments}
+    volumes:
+      - ./agent/knowledge:/app/knowledge:ro
+    depends_on:
+      weaviate:
+        condition: service_healthy
+    restart: "no"
+    command: python -m app.scripts.ingest_docs --knowledge-dir /app/knowledge --reset
+
 volumes:
   open-webui-data:
   rbac-data:
+  weaviate-data:

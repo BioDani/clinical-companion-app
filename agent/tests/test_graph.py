@@ -9,7 +9,6 @@ from langchain_core.messages import HumanMessage
 
 from app.internal.graph import (
     ANSWER_PROMPT,
-    BOOK_TITLE,
     GENERAL_PROMPT,
     HABIT_BOUNDARY,
     REFUSAL,
@@ -17,14 +16,27 @@ from app.internal.graph import (
     build_graph,
     companion,
 )
+from app.internal.weaviate_schema import BOOK_AUTHOR
 
 pytestmark = pytest.mark.optional
+
+
+def _book_source(page: int = 3, paragraph: int = 1, content: str = "fiber at breakfast") -> dict:
+    return {
+        "author": BOOK_AUTHOR,
+        "title": "Pilares",
+        "page_number": page,
+        "paragraph": paragraph,
+        "source_doc": "ebook.pdf",
+        "content": content,
+    }
 
 
 def _state(text: str) -> dict:
     return {
         "messages": [HumanMessage(content=text)],
         "retrieved": "",
+        "book_sources": [],
         "issues": [],
         "route": "",
         "search_query": "",
@@ -134,22 +146,25 @@ def test_diet_question_answers_from_book_passages(monkeypatch: pytest.MonkeyPatc
 
     monkeypatch.setattr(
         "app.internal.book.BookIndex.search",
-        lambda self, query: queries.append(query) or "page 3: fiber at breakfast",
+        lambda self, query: queries.append(query)
+        or ("page 3, paragraph 1: fiber at breakfast", [_book_source()]),
     )
     monkeypatch.setattr("app.internal.graph.complete", fake_complete)
     result = companion.invoke(_state("What is a good diet?"), _config())
 
     answer = result["messages"][-1].content
     assert queries == ["breakfast fiber"]
-    assert result["retrieved"] == "page 3: fiber at breakfast"
+    assert result["retrieved"] == "page 3, paragraph 1: fiber at breakfast"
+    assert result["book_sources"] == [_book_source()]
     assert result["searches"] == 1
     assert calls[-1]["max_tokens"] == 1024
     assert calls[-1]["messages"][0].content == ANSWER_PROMPT
-    assert "Elaborate" in ANSWER_PROMPT
+    assert "ONLY" in ANSWER_PROMPT
     assert "BMI" not in ANSWER_PROMPT
-    assert calls[-1]["messages"][-1].content == "Retrieved context:\npage 3: fiber at breakfast"
+    assert calls[-1]["messages"][-1].content == "Retrieved context:\npage 3, paragraph 1: fiber at breakfast"
     assert answer.startswith("a quoted answer")
-    assert f"{BOOK_TITLE}, page 3" in answer
+    assert "page 3" in answer
+    assert BOOK_AUTHOR in answer
     assert result["issues"] == []
 
 
@@ -160,7 +175,8 @@ def test_insufficient_book_grade_searches_the_web_once(monkeypatch: pytest.Monke
 
     monkeypatch.setattr(
         "app.internal.book.BookIndex.search",
-        lambda self, query: queries.append(query) or "page 2: unrelated",
+        lambda self, query: queries.append(query)
+        or ("page 2, paragraph 1: unrelated", [_book_source(page=2, content="unrelated")]),
     )
     monkeypatch.setattr(
         "app.internal.web_search.search_web",
@@ -191,15 +207,15 @@ def test_next_question_starts_a_fresh_search(monkeypatch: pytest.MonkeyPatch):
     )
     monkeypatch.setattr(
         "app.internal.book.BookIndex.search",
-        lambda self, query: f"page 1: {query}",
+        lambda self, query: (f"page 1, paragraph 0: {query}", [_book_source(page=1, paragraph=0, content=query)]),
     )
     monkeypatch.setattr("app.internal.graph.complete", _complete(replies))
     config = _config()
     first = companion.invoke(_state("What is a good diet?"), config)
     second = companion.invoke(_state("How should I exercise?"), config)
 
-    assert first["retrieved"] == "page 1: desayuno"
-    assert second["retrieved"] == "page 1: ejercicio"
+    assert first["retrieved"] == "page 1, paragraph 0: desayuno"
+    assert second["retrieved"] == "page 1, paragraph 0: ejercicio"
     assert second["searches"] == 1
     assert "page 1" in second["messages"][-1].content
 
@@ -265,7 +281,7 @@ def test_question_missing_from_book_and_web_uses_general_knowledge(
         calls.append({"messages": messages, "max_tokens": max_tokens})
         return next(replies)
 
-    monkeypatch.setattr("app.internal.book.BookIndex.search", lambda self, query: "")
+    monkeypatch.setattr("app.internal.book.BookIndex.search", lambda self, query: ("", []))
     monkeypatch.setattr("app.internal.web_search.search_web", lambda query: [])
     monkeypatch.setattr("app.internal.graph.complete", fake_complete)
     result = companion.invoke(_state("What is the capital of France?"), _config())
