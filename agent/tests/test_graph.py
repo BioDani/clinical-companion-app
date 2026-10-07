@@ -104,14 +104,14 @@ def test_what_to_take_stops_before_search_and_names_no_drug(
     def fail_complete(messages, max_tokens=512):
         raise AssertionError("model should not be called")
 
-    def fail_search(self, query):
+    def fail_search(query):
         raise AssertionError("book should not be searched")
 
     def fail_web(query):
         raise AssertionError("web should not be searched")
 
     monkeypatch.setattr("app.internal.graph.complete", fail_complete)
-    monkeypatch.setattr("app.internal.book.BookIndex.search", fail_search)
+    monkeypatch.setattr("app.internal.graph.search_passages", fail_search)
     monkeypatch.setattr("app.internal.web_search.search_web", fail_web)
     result = companion.invoke(_state("what should I take for Alzheimer?"), _config())
 
@@ -133,8 +133,8 @@ def test_diet_question_answers_from_book_passages(monkeypatch: pytest.MonkeyPatc
         return next(replies)
 
     monkeypatch.setattr(
-        "app.internal.book.BookIndex.search",
-        lambda self, query: queries.append(query) or "page 3: fiber at breakfast",
+        "app.internal.graph.search_passages",
+        lambda query: queries.append(query) or "page 3: fiber at breakfast",
     )
     monkeypatch.setattr("app.internal.graph.complete", fake_complete)
     result = companion.invoke(_state("What is a good diet?"), _config())
@@ -159,8 +159,8 @@ def test_insufficient_book_grade_searches_the_web_once(monkeypatch: pytest.Monke
     replies = iter(["breakfast fiber", "INSUFFICIENT", "from the web"])
 
     monkeypatch.setattr(
-        "app.internal.book.BookIndex.search",
-        lambda self, query: queries.append(query) or "page 2: unrelated",
+        "app.internal.graph.search_passages",
+        lambda query: queries.append(query) or "page 2: unrelated",
     )
     monkeypatch.setattr(
         "app.internal.web_search.search_web",
@@ -190,8 +190,8 @@ def test_next_question_starts_a_fresh_search(monkeypatch: pytest.MonkeyPatch):
         ]
     )
     monkeypatch.setattr(
-        "app.internal.book.BookIndex.search",
-        lambda self, query: f"page 1: {query}",
+        "app.internal.graph.search_passages",
+        lambda query: f"page 1: {query}",
     )
     monkeypatch.setattr("app.internal.graph.complete", _complete(replies))
     config = _config()
@@ -207,13 +207,13 @@ def test_next_question_starts_a_fresh_search(monkeypatch: pytest.MonkeyPatch):
 def test_height_and_weight_returns_bmi_without_the_book(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    def fail_search(self, query):
+    def fail_search(query):
         raise AssertionError("book should not be searched")
 
     def fail_complete(messages, max_tokens=512):
         raise AssertionError("model should not be called")
 
-    monkeypatch.setattr("app.internal.book.BookIndex.search", fail_search)
+    monkeypatch.setattr("app.internal.graph.search_passages", fail_search)
     monkeypatch.setattr("app.internal.graph.complete", fail_complete)
     result = companion.invoke(
         _state("I weigh 82 kg and I am 1.78 m. What habits help?"),
@@ -225,10 +225,10 @@ def test_height_and_weight_returns_bmi_without_the_book(
 
 
 def test_bmi_without_measurements_asks_for_them(monkeypatch: pytest.MonkeyPatch):
-    def fail_search(self, query):
+    def fail_search(query):
         raise AssertionError("book should not be searched")
 
-    monkeypatch.setattr("app.internal.book.BookIndex.search", fail_search)
+    monkeypatch.setattr("app.internal.graph.search_passages", fail_search)
     monkeypatch.setattr(
         "app.internal.graph.complete",
         lambda messages, max_tokens=512: "Please send weight in kg and height in cm.",
@@ -265,7 +265,7 @@ def test_question_missing_from_book_and_web_uses_general_knowledge(
         calls.append({"messages": messages, "max_tokens": max_tokens})
         return next(replies)
 
-    monkeypatch.setattr("app.internal.book.BookIndex.search", lambda self, query: "")
+    monkeypatch.setattr("app.internal.graph.search_passages", lambda query: "")
     monkeypatch.setattr("app.internal.web_search.search_web", lambda query: [])
     monkeypatch.setattr("app.internal.graph.complete", fake_complete)
     result = companion.invoke(_state("What is the capital of France?"), _config())

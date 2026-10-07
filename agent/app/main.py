@@ -1,17 +1,34 @@
 """Clinical Companion FastAPI application."""
 
+import logging
+import os
+import threading
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import jwt_secret
+from .internal.vector_store import ensure_indexed
 from .routers import health, openai
+
+logger = logging.getLogger(__name__)
+
+
+def _index_ebook() -> None:
+    try:
+        ensure_indexed()
+    except Exception:
+        logger.exception("Ebook index was not built")
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     jwt_secret()
+    # Do not wait for ingest, so /health can pass while Weaviate is still opening.
+    # Unit tests enter this lifespan and must not open Weaviate or Hugging Face.
+    if not os.environ.get("PYTEST_CURRENT_TEST"):
+        threading.Thread(target=_index_ebook, name="ebook-index", daemon=True).start()
     yield
 
 

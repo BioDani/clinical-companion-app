@@ -29,6 +29,10 @@ class BookIndex:
         self.path = path or _EBOOK
         self._chunks: list | None = None
 
+    def chunks(self) -> list:
+        """Return the ebook chunks used to build the vector index."""
+        return self._load()
+
     def search(self, query: str) -> str:
         scored: list[tuple[int, object]] = []
         query_tokens = _tokens(query)

@@ -1,0 +1,168 @@
+"""Weaviate index of the clinical companion ebook."""
+
+from __future__ import annotations
+
+import logging
+import threading
+import time
+
+import weaviate
+from weaviate.classes.config import Configure, DataType, Property
+from weaviate.classes.data import DataObject
+
+from ..config import weaviate_host
+from .book import BookIndex
+from .embeddings import embed_texts
+
+logger = logging.getLogger(__name__)
+
+COLLECTION_NAME = "Pilares"
+RETRIEVAL_LIMIT = 4
+_HTTP_PORT = 8080
+_GRPC_PORT = 50051
+_INSERT_BATCH = 16
+_CONNECT_ATTEMPTS = 30
+_CONNECT_DELAY_SECONDS = 2.0
+
+_index_lock = threading.Lock()
+_indexed = False
+
+
+def search_passages(query: str, limit: int = RETRIEVAL_LIMIT) -> str:
+    """Embed the query and return up to four page-tagged passages."""
+    ensure_indexed()
+    text = (query or "").strip()
+    if not text:
+        return ""
+    vector = embed_texts([text])[0]
+    with _connect() as client:
+        collection = client.collections.use(COLLECTION_NAME)
+        results = collection.query.near_vector(near_vector=vector, limit=limit)
+    passages = []
+    for obj in results.objects:
+        formatted = _format_hit(getattr(obj, "properties", None) or {})
+        if formatted:
+            passages.append(formatted)
+    return "\n\n".join(passages)
+
+
+def ensure_indexed() -> None:
+    """Create the Pilares collection and insert the ebook once."""
+    global _indexed
+    with _index_lock:
+        if _indexed:
+            return
+        client = _connect_ready()
+        try:
+            _ensure_collection(client)
+            collection = client.collections.use(COLLECTION_NAME)
+            if _object_count(collection):
+                logger.info("Pilares collection already has chunks; skipping ingest")
+                _indexed = True
+                return
+            try:
+                _insert_ebook(collection)
+            except Exception:
+                client.collections.delete(COLLECTION_NAME)
+                raise
+            _indexed = True
+        finally:
+            client.close()
+
+
+def _connect():
+    return weaviate.connect_to_local(
+        host=weaviate_host(),
+        port=_HTTP_PORT,
+        grpc_port=_GRPC_PORT,
+    )
+
+
+def _connect_ready():
+    host = weaviate_host()
+    last_error: Exception | None = None
+    for attempt in range(1, _CONNECT_ATTEMPTS + 1):
+        client = None
+        try:
+            client = _connect()
+            if client.is_ready():
+                return client
+            last_error = ConnectionError(f"Weaviate at {host} is not ready")
+        except Exception as exc:
+            last_error = exc
+        if client is not None:
+            client.close()
+        logger.warning(
+            "Weaviate not ready at %s (attempt %s/%s): %s",
+            host,
+            attempt,
+            _CONNECT_ATTEMPTS,
+            last_error,
+        )
+        if attempt < _CONNECT_ATTEMPTS:
+            time.sleep(_CONNECT_DELAY_SECONDS)
+    raise ConnectionError(f"Could not connect to Weaviate at {host}") from last_error
+
+
+def _ensure_collection(client) -> None:
+    if client.collections.exists(COLLECTION_NAME):
+        return
+    client.collections.create(
+        name=COLLECTION_NAME,
+        vector_config=Configure.Vectors.self_provided(),
+        properties=[
+            Property(name="text", data_type=DataType.TEXT),
+            Property(name="source", data_type=DataType.TEXT),
+            Property(name="document_id", data_type=DataType.TEXT),
+            Property(name="page", data_type=DataType.INT),
+            Property(name="chunk_index", data_type=DataType.INT),
+        ],
+    )
+
+
+def _object_count(collection) -> int:
+    result = collection.aggregate.over_all(total_count=True)
+    return int(result.total_count or 0)
+
+
+def _insert_ebook(collection) -> None:
+    book = BookIndex()
+    prepared = []
+    for index, chunk in enumerate(book.chunks()):
+        text = (chunk.page_content or "").strip()
+        if not text:
+            continue
+        page = chunk.metadata.get("page")
+        prepared.append(
+            {
+                "text": text,
+                "source": book.path.name,
+                "document_id": book.path.stem,
+                "page": int(page) + 1 if isinstance(page, int) else 0,
+                "chunk_index": index,
+            }
+        )
+    logger.info("Indexing %s ebook chunks into Weaviate", len(prepared))
+    for start in range(0, len(prepared), _INSERT_BATCH):
+        batch = prepared[start : start + _INSERT_BATCH]
+        vectors = embed_texts([item["text"] for item in batch])
+        if len(vectors) != len(batch):
+            raise RuntimeError("Embedding batch size did not match the chunk batch")
+        result = collection.data.insert_many(
+            [
+                DataObject(properties=item, vector=vector)
+                for item, vector in zip(batch, vectors)
+            ]
+        )
+        if result.has_errors:
+            raise RuntimeError(f"Weaviate insert failed: {result.errors}")
+    logger.info("Indexed %s chunks into %s", len(prepared), COLLECTION_NAME)
+
+
+def _format_hit(properties: dict) -> str:
+    text = str(properties.get("text") or "").strip()
+    if not text:
+        return ""
+    page = properties.get("page")
+    label = page if isinstance(page, int) and page > 0 else "?"
+    return f"page {label}: {text}"

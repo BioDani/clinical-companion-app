@@ -1,0 +1,5 @@
+ollama
+weaviate-client
+pypdf
+langchain-text-splitters
+fonttools

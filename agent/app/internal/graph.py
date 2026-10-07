@@ -17,8 +17,8 @@ from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 
 from .bmi import BmiTool
-from .book import BookIndex
 from .llm import complete
+from .vector_store import search_passages
 
 
 SMALL_TALK_PROMPT = (
@@ -279,11 +279,8 @@ class HabitBoundaryAgent:
 class RagAgent:
     """Search the ebook once, then answer or leave the question for the web."""
 
-    def __init__(self, book: BookIndex | None = None):
-        self.book = book or BookIndex()
-
     def search(self, state: RouterAgentState) -> dict:
-        """Plan Spanish keywords and search the ebook once."""
+        """Plan Spanish keywords and search the ebook in Weaviate once."""
         question = _latest_human(state)
         query = _first_line(
             complete(
@@ -295,7 +292,7 @@ class RagAgent:
         ) or question
         return {
             "search_query": query,
-            "retrieved": self.book.search(query),
+            "retrieved": search_passages(query),
             "web_sources": [],
             "searches": 1,
             "coverage": "",

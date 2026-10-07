@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 DEFAULT_HF_MODEL = "Qwen/Qwen2.5-72B-Instruct"
+DEFAULT_HF_EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 AGENT_MODEL_ID = "clinical-companion"
 
 
@@ -24,6 +25,14 @@ def hf_token() -> str:
 
 def hf_model() -> str:
     return (os.getenv("HF_MODEL") or "").strip() or DEFAULT_HF_MODEL
+
+
+def hf_embedding_model() -> str:
+    return (os.getenv("HF_EMBEDDING_MODEL") or "").strip() or DEFAULT_HF_EMBEDDING_MODEL
+
+
+def weaviate_host() -> str:
+    return (os.getenv("WEAVIATE_HOST") or "").strip() or "localhost"
 
 
 def jwt_secret() -> str:
