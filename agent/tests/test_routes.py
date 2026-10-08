@@ -60,9 +60,10 @@ def test_chat_completion_uses_session_and_reply(
 ):
     seen: dict = {}
 
-    def run(messages, thread_id: str) -> str:
+    def run(messages, thread_id: str, user_id: str | None = None) -> str:
         seen["roles"] = [message.role for message in messages]
         seen["thread_id"] = thread_id
+        seen["user_id"] = user_id
         return "oats and fruit"
 
     monkeypatch.setattr("app.routers.openai.run_companion", run)
@@ -78,6 +79,7 @@ def test_chat_completion_uses_session_and_reply(
     assert response.status_code == 200
     body = response.json()
     assert seen["thread_id"] == "sess-9"
+    assert seen["user_id"] == "user-1"
     assert seen["roles"] == ["user"]
     assert body["object"] == "chat.completion"
     assert body["model"] == "custom-model"
@@ -101,8 +103,9 @@ def test_chat_without_session_mints_a_thread(
 ):
     seen: dict = {}
 
-    def run(messages, thread_id: str) -> str:
+    def run(messages, thread_id: str, user_id: str | None = None) -> str:
         seen["thread_id"] = thread_id
+        seen["user_id"] = user_id
         return "ok"
 
     monkeypatch.setattr("app.routers.openai.run_companion", run)
@@ -115,6 +118,7 @@ def test_chat_without_session_mints_a_thread(
     assert response.json()["model"] == AGENT_MODEL_ID
     assert seen["thread_id"]
     assert seen["thread_id"] != "user-1"
+    assert seen["user_id"] == "user-1"
 
 
 def test_chat_stream_emits_sse(
@@ -122,7 +126,10 @@ def test_chat_stream_emits_sse(
     auth_header: dict[str, str],
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setattr("app.routers.openai.run_companion", lambda messages, thread_id: "streamed")
+    monkeypatch.setattr(
+        "app.routers.openai.run_companion",
+        lambda messages, thread_id, user_id=None: "streamed",
+    )
     response = client.post(
         "/v1/chat/completions",
         headers=auth_header,

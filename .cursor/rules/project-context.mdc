@@ -1,0 +1,20 @@
+---
+description: Clinical Companion product scope, Compose stack, and where the written decisions live
+alwaysApply: true
+---
+
+# Clinical Companion
+
+`FinalProject/app` is Clinical Companion: cited chat on diet, exercise, healthy habits, and related wellbeing. It is informational and does not replace a physician. Diagnosis, treatment, medication advice, EHR, wearables, and native apps are out of this build. Login and user home are backlog only, not Compose services.
+
+Compose project `clinical-companion`, started from `FinalProject/app`:
+
+- Open WebUI `v0.11.3` on port 3000. `WEBUI_AUTH` is off. It signs in to RBAC once and sends that JWT as `OPENAI_API_KEY`.
+- Agent on port 8000. FastAPI, OpenAI-compatible `/v1`.
+- RBAC on port 8001.
+- Weaviate collection `Pilares`. The ebook PDF stays in `agent/knowledge`.
+- Langfuse on port 3001. Traces stay in this Compose project.
+
+Default chat model is `Qwen/Qwen3-4B-Instruct-2507` through the Hugging Face router. Embeddings use `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`.
+
+Product and architecture decisions are in `FinalProject/wiki/Product-vision.md` and `FinalProject/wiki/Architecture-vision.md`. Mermaid on those pages is the source. PNGs in `wiki/assets/` can lag. Secrets stay in `.env`; do not commit them.

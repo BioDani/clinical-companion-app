@@ -55,7 +55,7 @@ def list_models(
 def chat_completions(
     body: ChatCompletionRequest,
     session_id: Annotated[str | None, Depends(get_session_id)],
-    _principal: Annotated[Principal, Depends(require_principal)],
+    principal: Annotated[Principal, Depends(require_principal)],
 ):
     if not body.messages:
         raise HTTPException(status_code=400, detail="messages is required")
@@ -65,7 +65,7 @@ def chat_completions(
     # checkpoint. A fresh thread keeps MemorySaver from concatenating;
     # pass X-Session-Id to persist.
     thread_id = session_id or str(uuid.uuid4())
-    text = run_companion(body.messages, thread_id)
+    text = run_companion(body.messages, thread_id, principal.user_id)
     created = int(time.time())
     completion_id = _completion_id()
     model = body.model or AGENT_MODEL_ID

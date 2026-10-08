@@ -9,6 +9,7 @@ from typing import Annotated, Any
 from fastapi import Header, HTTPException
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
+from .config import langfuse_enabled
 from .internal.graph import companion
 
 logger = logging.getLogger(__name__)
@@ -110,11 +111,29 @@ def turn_replies(messages: list) -> str:
     return ""
 
 
-def run_companion(messages: list, thread_id: str) -> str:
+def invoke_config(thread_id: str, user_id: str | None = None) -> dict[str, Any]:
+    """Graph config for one turn. Langfuse metadata is added only when tracing is on."""
+    config: dict[str, Any] = {"configurable": {"thread_id": thread_id}}
+    if not langfuse_enabled():
+        return config
+    from langfuse.langchain import CallbackHandler
+
+    metadata: dict[str, Any] = {
+        "langfuse_session_id": thread_id,
+        "langfuse_tags": ["clinical-companion"],
+    }
+    if user_id:
+        metadata["langfuse_user_id"] = user_id
+    config["callbacks"] = [CallbackHandler()]
+    config["metadata"] = metadata
+    return config
+
+
+def run_companion(messages: list, thread_id: str, user_id: str | None = None) -> str:
     try:
         result = companion.invoke(
             {"messages": to_lc_messages(messages)},
-            {"configurable": {"thread_id": thread_id}},
+            invoke_config(thread_id, user_id),
         )
     except ValueError as exc:
         logger.exception("LLM configuration error")

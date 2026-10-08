@@ -11,6 +11,7 @@ No model weights are stored in the image. Inference goes out to Hugging Face (`H
 | `rbac` | http://localhost:8001/docs | Identity: `POST /auth/login`, users, roles |
 | `agent` | http://localhost:8000 | FastAPI + LangGraph (`/health` public; `/v1/*` needs Bearer JWT) |
 | `open-webui` | http://localhost:3000 | Chat UI pointed at the agent (boots with a token from rbac) |
+| `langfuse-web` | http://localhost:3001 | Local traces for each agent turn |
 
 The agent is a LangChain tool loop with a content filter, PII checks, ebook and web search, a Tavily result filter, and a final safety check.
 
@@ -18,22 +19,26 @@ Authorize is token-first: rbac puts `sub`, `role`, and `permissions` in an HS256
 
 ## Run
 
-1. Copy the env file and set a Hugging Face token ([create one](https://huggingface.co/settings/tokens); it must start with `hf_`). Also set `JWT_SECRET`, `ADMIN_PASSWORD`, and `TAVILY_API_KEY` (a [Tavily](https://tavily.com) key for web search):
+1. Copy the env file and set a Hugging Face token ([create one](https://huggingface.co/settings/tokens); it must start with `hf_`). Also set `JWT_SECRET`, `ADMIN_PASSWORD`, `TAVILY_API_KEY` (a [Tavily](https://tavily.com) key for web search), and the Langfuse values in `.env.example`:
 
    ```bash
    cp .env.example .env
    python3 -c "import secrets; print(secrets.token_urlsafe(48))"
+   openssl rand -hex 32
+   openssl rand -base64 32
    ```
 
-   Put the printed string in `JWT_SECRET`. Change `ADMIN_PASSWORD`.
+   Put the first string in `JWT_SECRET`. Put the hex string in `LANGFUSE_ENCRYPTION_KEY` (it must be 64 hex characters). Use the base64 strings for `LANGFUSE_NEXTAUTH_SECRET` and `LANGFUSE_SALT`. Change `ADMIN_PASSWORD` and `LANGFUSE_INIT_USER_PASSWORD`. Set `LANGFUSE_INIT_PROJECT_PUBLIC_KEY` to `pk-lf-` plus a UUID and `LANGFUSE_INIT_PROJECT_SECRET_KEY` to `sk-lf-` plus a UUID, the same shape Langfuse generates. Database and MinIO passwords should use only letters, numbers, hyphens, and underscores.
 
-2. Start the stack (first `rbac` build clones https://github.com/ingjohnguerrero/fastapi_rbac):
+2. Start the stack (first `rbac` build clones https://github.com/ingjohnguerrero/fastapi_rbac). The first Langfuse pull is large, and ClickHouse plus migrations often take a couple of minutes before the agent becomes healthy:
 
    ```bash
    docker compose up --build
    ```
 
 3. Open http://localhost:3000 and select the **clinical-companion** model.
+
+Langfuse is at http://localhost:3001. Sign in with `LANGFUSE_INIT_USER_EMAIL` and `LANGFUSE_INIT_USER_PASSWORD`. After one chat completion, the project shows a trace for that turn: session id from `X-Session-Id` (or the request's thread id), user id from the JWT `sub`, and tag `clinical-companion`. Open WebUI uses one admin token, so every UI chat is that same subject. Traces stay in the Compose volumes.
 
 On OrbStack, Compose domains are `https://<service>.clinical-companion.orb.local`. Open rbac at **https://rbac.clinical-companion.orb.local/docs** (there is no app at `/`). Host ports still work: rbac `http://localhost:8001/docs`.
 

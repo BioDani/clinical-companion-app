@@ -48,3 +48,12 @@ def jwt_secret() -> str:
 
 def jwt_algorithm() -> str:
     return (os.getenv("JWT_ALGORITHM") or "").strip() or "HS256"
+
+
+def langfuse_enabled() -> bool:
+    """True when both Langfuse keys are set and this process is not pytest."""
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return False
+    public = (os.getenv("LANGFUSE_PUBLIC_KEY") or "").strip()
+    secret = (os.getenv("LANGFUSE_SECRET_KEY") or "").strip()
+    return bool(public and secret)

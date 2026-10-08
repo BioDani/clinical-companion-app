@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .config import jwt_secret
+from .config import jwt_secret, langfuse_enabled
 from .internal.vector_store import ensure_indexed
 from .routers import health, openai
 
@@ -22,6 +22,17 @@ def _index_ebook() -> None:
         logger.exception("Ebook index was not built")
 
 
+def _flush_langfuse() -> None:
+    if not langfuse_enabled():
+        return
+    try:
+        from langfuse import get_client
+
+        get_client().flush()
+    except Exception:
+        logger.exception("Langfuse flush failed")
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     jwt_secret()
@@ -30,6 +41,7 @@ async def lifespan(_app: FastAPI):
     if not os.environ.get("PYTEST_CURRENT_TEST"):
         threading.Thread(target=_index_ebook, name="ebook-index", daemon=True).start()
     yield
+    _flush_langfuse()
 
 
 app = FastAPI(title="Clinical Companion agent", version="0.1.0", lifespan=lifespan)

@@ -1,0 +1,24 @@
+---
+description: How the companion retrieves evidence and attaches citations
+globs: FinalProject/app/agent/**/*.py
+alwaysApply: false
+---
+
+# Retrieval and citations
+
+The model does not choose whether to search. Do not register `search_ebook` or `search_web` as tools. A live failure was an empty `tool_calls` list plus “general knowledge, not a citation from the book or the web.”
+
+`EvidenceMiddleware.before_model` in `agent/app/internal/graph.py` runs before the answer:
+
+1. Scope label `GREETING`, `IN_SCOPE`, or `OUT_OF_SCOPE`. Anything else counts as out of scope. Greetings get `INTRODUCTION`. Off-topic questions, such as a training cut date, get `OUT_OF_SCOPE` and do not search.
+2. Diagnosis, treatment, and a complete BMI stay on the content-filter replies and never reach this step.
+3. In-scope questions call `search_hits`. **Explained** means a near passage shares at least `EXPLAINED_OVERLAP` (3) content words and its distance is missing or at most `FAR_DISTANCE` (0.55). Answer from the book only.
+4. **Barely** or **miss** calls Tavily with `HEALTH_DOMAINS`: `nih.gov`, `pubmed.ncbi.nlm.nih.gov`, `who.int`, `cdc.gov`, `medlineplus.gov`, `realfood.gov`, `usda.gov`. `realfood.gov` and `usda.gov` are included so nutrition-guide questions can be cited.
+5. `kept_tavily_results` drops injection lines and dose or medication sentences. Cite only surviving links.
+6. A book miss plus no usable web result returns `NOT_COVERED`. Do not fill that gap from model memory.
+
+`CitationMiddleware` is registered after the safety middleware so it runs first: it appends the stored `### Reference` and `### Sources` block, and removes a general-knowledge disclaimer when sources exist. Safety then reviews that text. `UNSAFE` replaces the whole reply with `HABIT_BOUNDARY`.
+
+PII redacts email and phone and masks credit cards. Leave URL detection off so source links survive.
+
+Graph tests are marked optional. From `FinalProject/app/agent`: `.venv/bin/python -m pytest tests --run-optional`.

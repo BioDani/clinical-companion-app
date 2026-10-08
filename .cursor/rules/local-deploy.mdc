@@ -1,0 +1,23 @@
+---
+description: Rebuild the agent image after code changes so chat uses the current companion
+globs: FinalProject/app/docker-compose.yml,FinalProject/app/agent/Dockerfile,FinalProject/app/agent/app/**/*.py
+alwaysApply: false
+---
+
+# Local deploy
+
+The agent image copies `app/` and `knowledge/` at build time (`agent/Dockerfile`). Restarting `clinical-companion-agent` keeps the old prompt and the old tool loop.
+
+After changing agent code, from `FinalProject/app`:
+
+```bash
+docker compose up -d --build agent
+```
+
+A chat that still ends with “general knowledge and not a citation from the book or the web” is the previous image. Confirm the running process with:
+
+```bash
+docker exec clinical-companion-agent python -c "import app.internal.graph as g; print(hasattr(g, 'EvidenceMiddleware'))"
+```
+
+That print is `True` on the current companion. Weaviate data stays in the `weaviate_data` volume across this rebuild.
