@@ -1,6 +1,6 @@
 # Clinical Companion
 
-Local Docker boilerplate for the conversational agent: a Python **LangGraph** service that calls Hugging Face models through **smolagents**, plus **Open WebUI** as the chat client. Login and access tokens come from **[fastapi_rbac](https://github.com/ingjohnguerrero/fastapi_rbac)**; the agent verifies those JWTs before serving `/v1` routes.
+Local Docker boilerplate for the conversational agent: a Python **LangChain** agent that calls Hugging Face through the router, plus **Open WebUI** as the chat client. Login and access tokens come from **[fastapi_rbac](https://github.com/ingjohnguerrero/fastapi_rbac)**; the agent verifies those JWTs before serving `/v1` routes.
 
 No model weights are stored in the image. Inference goes out to Hugging Face (`HF_TOKEN`). RAG, citations, and extra knowledge bases are later sprints — this stack is the sandbox they plug into.
 
@@ -12,7 +12,7 @@ No model weights are stored in the image. Inference goes out to Hugging Face (`H
 | `agent` | http://localhost:8000 | FastAPI + LangGraph (`/health` public; `/v1/*` needs Bearer JWT) |
 | `open-webui` | http://localhost:3000 | Chat UI pointed at the agent (boots with a token from rbac) |
 
-The graph is `START → retrieve (stub) → generate → END`. `retrieve` returns empty context for now.
+The agent is a LangChain tool loop with a content filter, PII checks, ebook and web search, a Tavily result filter, and a final safety check.
 
 Authorize is token-first: rbac puts `sub`, `role`, and `permissions` in an HS256 JWT. The agent verifies the same `JWT_SECRET`; it does not query the identity store.
 
@@ -39,7 +39,7 @@ On OrbStack, Compose domains are `https://<service>.clinical-companion.orb.local
 
 Login is **username + password** (`ADMIN_USERNAME` / `ADMIN_PASSWORD` in `.env`), not email. In `/docs`, call `POST /auth/login`, then **Authorize** with `Bearer <access_token>`.
 
-Optional: set `HF_MODEL` in `.env` (default `Qwen/Qwen2.5-72B-Instruct`).
+Optional: set `HF_MODEL` in `.env` (default `Qwen/Qwen3-4B-Instruct-2507`).
 
 Open WebUI logs in to rbac once at start and uses that JWT as `OPENAI_API_KEY`. Default token lifetime in Compose is 24 hours (`ACCESS_TOKEN_EXPIRE_MINUTES`). Restart `open-webui` to mint a new one.
 
@@ -89,5 +89,5 @@ agent/
       openai.py           # /v1/models, /v1/chat/completions
     internal/
       graph.py            # LangGraph stub
-      llm.py              # smolagents InferenceClientModel
+      llm.py              # ChatOpenAI on the Hugging Face router
 ```

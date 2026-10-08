@@ -129,12 +129,6 @@ def test_run_companion_returns_last_assistant_text(monkeypatch: pytest.MonkeyPat
 
     assert text == "done"
     assert captured["config"]["configurable"]["thread_id"] == "thread-1"
-    assert captured["state"]["retrieved"] == ""
-    assert captured["state"]["issues"] == []
-    assert captured["state"]["route"] == ""
-    assert captured["state"]["search_query"] == ""
-    assert captured["state"]["searches"] == 0
-    assert captured["state"]["coverage"] == ""
     assert isinstance(captured["state"]["messages"][0], HumanMessage)
     assert captured["state"]["messages"][0].content == "hi"
 

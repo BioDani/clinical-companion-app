@@ -1,102 +1,74 @@
-"""smolagents payload shaping. Inference itself stays mocked."""
+"""Hugging Face chat model. The router call stays mocked."""
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
 
-from app.internal.llm import _chat_content, _content_text, complete, get_model
+from app.internal.llm import HF_OPENAI_BASE, HuggingFaceChat
 
 pytestmark = pytest.mark.optional
 
 
-@pytest.fixture(autouse=True)
-def _clear_model_cache():
-    get_model.cache_clear()
-    yield
-    get_model.cache_clear()
+def test_constructing_the_chat_model_does_not_read_the_token(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    def fail() -> str:
+        raise AssertionError("token should not be read")
+
+    monkeypatch.setattr("app.internal.llm.hf_token", fail)
+    HuggingFaceChat()
 
 
-def test_content_text_flattens_parts():
-    class Part:
-        text = "tail"
-
-    assert _content_text("plain") == "plain"
-    assert (
-        _content_text(
-            [
-                "A",
-                {"type": "text", "text": "B"},
-                {"type": "image", "text": "no"},
-                Part(),
-            ]
-        )
-        == "ABtail"
-    )
-    assert _content_text(None) == ""
-    assert _content_text(4) == "4"
-
-
-def test_chat_content_is_a_text_block():
-    assert _chat_content("hello") == [{"type": "text", "text": "hello"}]
-
-
-def test_get_model_requires_hf_token(monkeypatch: pytest.MonkeyPatch):
+def test_generate_requires_hf_token(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("HF_TOKEN", "")
     with pytest.raises(ValueError, match="HF_TOKEN"):
-        get_model()
+        HuggingFaceChat()._generate([HumanMessage(content="hi")])
 
 
-def test_complete_maps_roles_and_strips_reply(monkeypatch: pytest.MonkeyPatch):
+def test_generate_uses_the_huggingface_router(monkeypatch: pytest.MonkeyPatch):
     captured: dict = {}
 
-    class FakeModel:
-        def generate(self, payload):
-            captured["payload"] = payload
-            return SimpleNamespace(content="  reply  ")
+    class FakeClient:
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+            captured["messages"] = messages
+            return ChatResult(
+                generations=[ChatGeneration(message=AIMessage(content="ok"))]
+            )
 
-    monkeypatch.setattr("app.internal.llm.get_model", lambda: FakeModel())
-    text = complete(
-        [
-            SystemMessage(content="rules"),
-            HumanMessage(content=[{"type": "text", "text": "question"}]),
-            AIMessage(content="earlier"),
-        ]
-    )
+    def fake_openai(**kwargs):
+        captured["kwargs"] = kwargs
+        return FakeClient()
 
-    assert text == "reply"
-    roles = [message.role for message in captured["payload"]]
-    contents = [message.content for message in captured["payload"]]
-    assert roles == ["system", "user", "assistant"]
-    assert contents[1] == [{"type": "text", "text": "question"}]
+    monkeypatch.setenv("HF_TOKEN", "hf_test")
+    monkeypatch.setenv("HF_MODEL", "Qwen/Qwen3-4B-Instruct-2507")
+    monkeypatch.setattr("app.internal.llm.ChatOpenAI", fake_openai)
+    result = HuggingFaceChat()._generate([HumanMessage(content="hi")])
+
+    assert captured["kwargs"]["base_url"] == HF_OPENAI_BASE
+    assert captured["kwargs"]["api_key"] == "hf_test"
+    assert captured["kwargs"]["model"] == "Qwen/Qwen3-4B-Instruct-2507"
+    assert captured["kwargs"]["temperature"] == 0
+    assert result.generations[0].message.content == "ok"
+    assert captured["messages"][0].content == "hi"
 
 
-def test_complete_maps_tool_and_unknown_roles(monkeypatch: pytest.MonkeyPatch):
+def test_bind_tools_delegates_to_the_router_client(monkeypatch: pytest.MonkeyPatch):
     captured: dict = {}
 
-    class FakeModel:
-        def generate(self, payload):
-            captured["payload"] = payload
-            return SimpleNamespace(content="ok")
+    class FakeClient:
+        def bind_tools(self, tools, **kwargs):
+            captured["tools"] = tools
+            captured["kwargs"] = kwargs
+            return "bound"
 
-    class Tool:
-        type = "tool"
-        content = "call"
+    monkeypatch.setenv("HF_TOKEN", "hf_test")
+    monkeypatch.setattr("app.internal.llm.ChatOpenAI", lambda **kwargs: FakeClient())
 
-    class Odd:
-        type = "function"
-        content = "nope"
+    def search(query: str) -> str:
+        return query
 
-    monkeypatch.setattr("app.internal.llm.get_model", lambda: FakeModel())
-    assert complete([Tool(), Odd()]) == "ok"
-    assert [message.role for message in captured["payload"]] == ["tool", "user"]
-
-
-def test_complete_uses_raw_result_when_content_missing(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(
-        "app.internal.llm.get_model",
-        lambda: SimpleNamespace(generate=lambda payload: "  bare  "),
-    )
-    assert complete([HumanMessage(content="hi")]) == "bare"
+    assert HuggingFaceChat().bind_tools([search], tool_choice="auto") == "bound"
+    assert captured["tools"] == [search]
+    assert captured["kwargs"]["tool_choice"] == "auto"

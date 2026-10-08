@@ -113,15 +113,7 @@ def turn_replies(messages: list) -> str:
 def run_companion(messages: list, thread_id: str) -> str:
     try:
         result = companion.invoke(
-            {
-                "messages": to_lc_messages(messages),
-                "retrieved": "",
-                "issues": [],
-                "route": "",
-                "search_query": "",
-                "searches": 0,
-                "coverage": "",
-            },
+            {"messages": to_lc_messages(messages)},
             {"configurable": {"thread_id": thread_id}},
         )
     except ValueError as exc:

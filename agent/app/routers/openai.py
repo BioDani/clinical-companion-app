@@ -61,9 +61,9 @@ def chat_completions(
         raise HTTPException(status_code=400, detail="messages is required")
 
     # Open WebUI sends the full history each turn. Reusing body.user /
-    # principal.user_id as the LangGraph thread duplicates consecutive
-    # user messages and smolagents raises "wrong content". A fresh thread
-    # keeps MemorySaver from concatenating; pass X-Session-Id to persist.
+    # principal.user_id as the thread id appends that replay onto the
+    # checkpoint. A fresh thread keeps MemorySaver from concatenating;
+    # pass X-Session-Id to persist.
     thread_id = session_id or str(uuid.uuid4())
     text = run_companion(body.messages, thread_id)
     created = int(time.time())

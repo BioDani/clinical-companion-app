@@ -8,7 +8,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-DEFAULT_HF_MODEL = "Qwen/Qwen2.5-72B-Instruct"
+# Small non-thinking instruct model. SmolLM is not on any Inference Provider.
+# Live on featherless and nscale, so a short grade or keyword line stays a direct reply.
+DEFAULT_HF_MODEL = "Qwen/Qwen3-4B-Instruct-2507"
 DEFAULT_HF_EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 AGENT_MODEL_ID = "clinical-companion"
 
