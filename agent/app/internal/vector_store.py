@@ -5,19 +5,23 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from dataclasses import dataclass
 
 import weaviate
 from weaviate.classes.config import Configure, DataType, Property
 from weaviate.classes.data import DataObject
+from weaviate.classes.query import MetadataQuery
 
 from ..config import weaviate_host
-from .book import BookIndex
+from .book import BookIndex, _tokens
 from .embeddings import embed_texts
 
 logger = logging.getLogger(__name__)
 
 COLLECTION_NAME = "Pilares"
 RETRIEVAL_LIMIT = 4
+EXPLAINED_OVERLAP = 3
+FAR_DISTANCE = 0.55
 _HTTP_PORT = 8080
 _GRPC_PORT = 50051
 _INSERT_BATCH = 16
@@ -28,22 +32,73 @@ _index_lock = threading.Lock()
 _indexed = False
 
 
-def search_passages(query: str, limit: int = RETRIEVAL_LIMIT) -> str:
-    """Embed the query and return up to four page-tagged passages."""
+@dataclass(frozen=True)
+class Passage:
+    """One page-tagged ebook passage and its vector distance."""
+
+    text: str
+    distance: float | None
+
+
+def search_hits(query: str, limit: int = RETRIEVAL_LIMIT) -> list[Passage]:
+    """Embed the query and return up to four passages with distance."""
     ensure_indexed()
     text = (query or "").strip()
     if not text:
-        return ""
+        return []
     vector = embed_texts([text])[0]
     with _connect() as client:
         collection = client.collections.use(COLLECTION_NAME)
-        results = collection.query.near_vector(near_vector=vector, limit=limit)
-    passages = []
+        results = collection.query.near_vector(
+            near_vector=vector,
+            limit=limit,
+            return_metadata=MetadataQuery(distance=True),
+        )
+    hits: list[Passage] = []
     for obj in results.objects:
         formatted = _format_hit(getattr(obj, "properties", None) or {})
-        if formatted:
-            passages.append(formatted)
-    return "\n\n".join(passages)
+        if not formatted:
+            continue
+        hits.append(Passage(text=formatted, distance=_distance(obj)))
+    return hits
+
+
+def search_passages(query: str, limit: int = RETRIEVAL_LIMIT) -> str:
+    """Embed the query and return up to four page-tagged passages."""
+    return "\n\n".join(hit.text for hit in search_hits(query, limit))
+
+
+def grade_coverage(query: str, hits: list[Passage]) -> str:
+    """Grade ebook coverage as explained, barely, or miss.
+
+    Explained means a near passage shares several content words with the
+    question. A far neighbor, or a passage that only shares a word or two,
+    is barely. No passages, or a far neighbor with no shared words, is a miss.
+    """
+    if not hits:
+        return "miss"
+    best = max(_overlap(query, hit.text) for hit in hits)
+    distances = [hit.distance for hit in hits if hit.distance is not None]
+    nearest = min(distances) if distances else None
+    if nearest is not None and nearest > FAR_DISTANCE:
+        return "miss" if best == 0 else "barely"
+    if best >= EXPLAINED_OVERLAP:
+        return "explained"
+    return "barely"
+
+
+def _overlap(query: str, passage: str) -> int:
+    return len(_tokens(query) & _tokens(passage))
+
+
+def _distance(obj: object) -> float | None:
+    metadata = getattr(obj, "metadata", None)
+    if metadata is None:
+        return None
+    distance = getattr(metadata, "distance", None)
+    if distance is None:
+        return None
+    return float(distance)
 
 
 def ensure_indexed() -> None:

@@ -2,23 +2,31 @@
 
 from __future__ import annotations
 
-import json
 import re
+from typing import Any, NotRequired
 
 from langchain.agents import create_agent
-from langchain.tools import tool
+from langchain.agents.middleware import AgentMiddleware, AgentState, hook_config
+from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.runtime import Runtime
 
 from .guardrails import (
     HABIT_BOUNDARY,
+    INTRODUCTION,
+    NOT_COVERED,
+    NO_WEB_SOURCES,
+    OUT_OF_SCOPE,
     REFUSAL,
-    TAVILY_PAYLOAD,
     ContentFilterMiddleware,
     SafetyGuardrailMiddleware,
-    TavilyResultMiddleware,
+    guard_tavily_results,
+    kept_tavily_results,
+    latest_human,
     pii_middleware,
 )
 from .llm import HuggingFaceChat
+from .web_search import HEALTH_DOMAINS, format_source_links
 
 BOOK_TITLE = "Dr. Carlos Jaramillo, Pilares"
 
@@ -27,25 +35,32 @@ SYSTEM_PROMPT = (
     "and healthy habits. "
     "You are not a diagnostic device and you do not replace a physician. "
     "Keep answers concise and in English. "
-    "If this is a greeting, introduce yourself as Clinical Companion. "
-    "If the user wants a BMI calculation but did not give both weight and height, "
-    "ask for weight in kilograms and height in centimeters or meters. "
-    "Do not estimate the numbers. "
-    "For a knowledge question, call search_ebook first. "
-    "The ebook is in Spanish, so pass Spanish keywords. "
-    "If the passages are enough, answer from them and include the reference block "
-    "from the tool. Do not invent claims that are not in the passages. "
-    "If the ebook does not cover the question, call search_web. "
-    "Answer from the web evidence the tool returns and include its Sources block. "
-    "If the tool says no usable web sources were found, answer from general knowledge "
-    "and say that this is general knowledge, not a citation from the book or the web. "
+    "Answer only from the evidence message in this turn. "
+    "Do not add facts from memory. "
+    "Do not say the answer is general knowledge. "
     "Do not diagnose or prescribe. "
     "Do not name a medication, a dose, or a treatment regimen. "
     "If a source mentions drugs, leave them out and keep only lifestyle habits. "
     "Remind the user this is informational guidance only."
 )
 
+SCOPE_PROMPT = (
+    "Classify the user message for Clinical Companion. "
+    "Reply with only one of these labels: GREETING, IN_SCOPE, OUT_OF_SCOPE. "
+    "GREETING is a hello, thanks, or a short social opener with no health question. "
+    "IN_SCOPE is diet, exercise, sleep, nutrition, healthy habits, or related wellbeing. "
+    "OUT_OF_SCOPE is anything else, including the assistant's training, dates, "
+    "coding, news, or trivia."
+)
+
 _PAGE = re.compile(r"\bpage (\d+)\b")
+_GENERAL_KNOWLEDGE = re.compile(r"^.*general knowledge.*$", re.IGNORECASE | re.MULTILINE)
+
+
+class CompanionState(AgentState):
+    """Agent state plus the citation block built from kept sources."""
+
+    citations: NotRequired[str]
 
 
 def format_book_reference(retrieved: str) -> str:
@@ -60,27 +75,146 @@ def format_book_reference(retrieved: str) -> str:
     return f"### Reference\n\n- {BOOK_TITLE}, {listed}"
 
 
-@tool
-def search_ebook(query: str) -> str:
-    """Search the Spanish ebook. Pass Spanish keywords likely to appear in the book."""
-    from .vector_store import search_passages
-
-    text = (search_passages(query) or "").strip()
-    if not text:
-        return "The book does not cover this question."
-    reference = format_book_reference(text)
-    if not reference:
-        return text
-    return f"{text}\n\n{reference}"
+def _scope_label(verdict: str) -> str:
+    text = (verdict or "").upper()
+    if "OUT_OF_SCOPE" in text:
+        return "OUT_OF_SCOPE"
+    if "GREETING" in text:
+        return "GREETING"
+    if "IN_SCOPE" in text:
+        return "IN_SCOPE"
+    return "OUT_OF_SCOPE"
 
 
-@tool
-def search_web(query: str) -> str:
-    """Search the public web after the ebook does not cover the question."""
-    from .web_search import search_web as run_search
+def _book_text(hits: list) -> str:
+    return "\n\n".join(hit.text for hit in hits if getattr(hit, "text", ""))
 
-    results = run_search(query)
-    return TAVILY_PAYLOAD + json.dumps(results)
+
+def _citation_block(book: str, web_results: list[dict]) -> str:
+    parts: list[str] = []
+    reference = format_book_reference(book)
+    if reference:
+        parts.append(reference)
+    links = format_source_links(web_results)
+    if links:
+        parts.append(links)
+    return "\n\n".join(parts)
+
+
+def _evidence_message(book: str, web_text: str) -> str:
+    parts = [
+        "Use only the evidence below. Do not add facts from memory. "
+        "Do not say this is general knowledge."
+    ]
+    if book.strip():
+        parts.append(f"Book passages:\n{book.strip()}")
+    if web_text.strip():
+        parts.append(f"Web evidence:\n{web_text.strip()}")
+    return "\n\n".join(parts)
+
+
+def _end(reply: str) -> dict[str, Any]:
+    return {
+        "messages": [AIMessage(content=reply)],
+        "citations": "",
+        "jump_to": "end",
+    }
+
+
+class EvidenceMiddleware(AgentMiddleware):
+    """Classify scope, retrieve evidence, and store the citation block."""
+
+    state_schema = CompanionState
+
+    def __init__(self, model) -> None:
+        super().__init__()
+        self.model = model
+
+    def _prepare(self, state: CompanionState) -> dict[str, Any] | None:
+        question = latest_human(state)
+        verdict = self.model.invoke(
+            [
+                {"role": "system", "content": SCOPE_PROMPT},
+                {"role": "user", "content": question},
+            ]
+        )
+        label = _scope_label(getattr(verdict, "content", verdict))
+        if label == "GREETING":
+            return _end(INTRODUCTION)
+        if label == "OUT_OF_SCOPE":
+            return _end(OUT_OF_SCOPE)
+
+        from .vector_store import grade_coverage, search_hits
+
+        hits = search_hits(question)
+        grade = grade_coverage(question, hits)
+        book = "" if grade == "miss" else _book_text(hits)
+        web_results: list[dict] = []
+        web_text = ""
+        if grade != "explained":
+            from .web_search import search_web
+
+            web_results = kept_tavily_results(
+                search_web(question, include_domains=list(HEALTH_DOMAINS))
+            )
+            web_text = guard_tavily_results(web_results)
+            if web_text == NO_WEB_SOURCES:
+                web_text = ""
+                web_results = []
+        if grade == "miss" and not web_results:
+            return _end(NOT_COVERED)
+        return {
+            "citations": _citation_block(book, web_results),
+            "messages": [HumanMessage(content=_evidence_message(book, web_text))],
+        }
+
+    @hook_config(can_jump_to=["end"])
+    def before_model(
+        self, state: CompanionState, runtime: Runtime
+    ) -> dict[str, Any] | None:
+        return self._prepare(state)
+
+    @hook_config(can_jump_to=["end"])
+    async def abefore_model(
+        self, state: CompanionState, runtime: Runtime
+    ) -> dict[str, Any] | None:
+        return self._prepare(state)
+
+
+def _strip_general_knowledge(text: str) -> str:
+    cleaned = _GENERAL_KNOWLEDGE.sub("", text)
+    return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+
+
+class CitationMiddleware(AgentMiddleware):
+    """Append the stored book and web citations to the final answer."""
+
+    def _attach(self, state: CompanionState) -> None:
+        citations = str(state.get("citations") or "").strip()
+        if not citations:
+            return
+        messages = state.get("messages") or []
+        if not messages:
+            return
+        last_message = messages[-1]
+        if not isinstance(last_message, AIMessage):
+            return
+        content = last_message.content if isinstance(last_message.content, str) else ""
+        body = _strip_general_knowledge(content)
+        if citations in body:
+            last_message.content = body
+            return
+        last_message.content = f"{body}\n\n{citations}"
+
+    def after_agent(self, state: CompanionState, runtime: Runtime) -> dict[str, Any] | None:
+        self._attach(state)
+        return None
+
+    async def aafter_agent(
+        self, state: CompanionState, runtime: Runtime
+    ) -> dict[str, Any] | None:
+        self._attach(state)
+        return None
 
 
 def build_companion(model=None):
@@ -88,13 +222,14 @@ def build_companion(model=None):
     chat = HuggingFaceChat() if model is None else model
     return create_agent(
         model=chat,
-        tools=[search_ebook, search_web],
+        tools=[],
         system_prompt=SYSTEM_PROMPT,
         middleware=[
             ContentFilterMiddleware(),
             *pii_middleware(),
-            TavilyResultMiddleware(),
+            EvidenceMiddleware(chat),
             SafetyGuardrailMiddleware(chat),
+            CitationMiddleware(),
         ],
         checkpointer=MemorySaver(),
     )

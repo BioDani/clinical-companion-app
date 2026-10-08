@@ -42,6 +42,21 @@ HABIT_BOUNDARY = (
 NO_WEB_SOURCES = "No usable web sources were found for this question."
 TAVILY_PAYLOAD = "TAVILY_JSON\n"
 
+INTRODUCTION = (
+    "Hello! I'm Clinical Companion, your assistant for diet, exercise, "
+    "and healthy habits. How can I help?"
+)
+
+OUT_OF_SCOPE = (
+    "I can only help with diet, exercise, healthy habits, and related wellbeing. "
+    "This is informational guidance only."
+)
+
+NOT_COVERED = (
+    "This topic is not covered by the book or the allowed health sources. "
+    "This is informational guidance only."
+)
+
 _DANGEROUS = (
     "diagnos",
     "prescribe",
@@ -159,8 +174,8 @@ def clean_web_text(text: str) -> str:
     return "\n".join(kept_lines).strip()
 
 
-def guard_tavily_results(results: list[dict]) -> str:
-    """Return model-facing evidence, citing only sources that still have text."""
+def kept_tavily_results(results: list[dict]) -> list[dict]:
+    """Drop injection lines and dose or medication sentences, then keep survivors."""
     kept: list[dict] = []
     for result in results:
         content = clean_web_text(str(result.get("content") or ""))
@@ -168,6 +183,12 @@ def guard_tavily_results(results: list[dict]) -> str:
             continue
         title = clean_web_text(str(result.get("title") or ""))
         kept.append({**result, "title": title, "content": content})
+    return kept
+
+
+def guard_tavily_results(results: list[dict]) -> str:
+    """Return model-facing evidence, citing only sources that still have text."""
+    kept = kept_tavily_results(results)
     if not kept:
         return NO_WEB_SOURCES
     body = format_search_results(kept)
@@ -268,7 +289,13 @@ class TavilyResultMiddleware(AgentMiddleware):
 
 def _skip_safety(text: str) -> bool:
     stripped = text.strip()
-    return stripped in {REFUSAL, HABIT_BOUNDARY} or stripped.startswith("BMI ")
+    return stripped in {
+        REFUSAL,
+        HABIT_BOUNDARY,
+        INTRODUCTION,
+        OUT_OF_SCOPE,
+        NOT_COVERED,
+    } or stripped.startswith("BMI ")
 
 
 class SafetyGuardrailMiddleware(AgentMiddleware):

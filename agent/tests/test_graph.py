@@ -1,4 +1,4 @@
-"""Companion agent: content filter, PII, Tavily guard, and safety check."""
+"""Companion agent: scope, retrieval, citations, and safety check."""
 
 from __future__ import annotations
 
@@ -7,12 +7,19 @@ from typing import Any
 
 import pytest
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import Field
 
 from app.internal.graph import HABIT_BOUNDARY, REFUSAL, build_companion
-from app.internal.guardrails import TAVILY_PAYLOAD, guard_tavily_results
+from app.internal.guardrails import (
+    INTRODUCTION,
+    NOT_COVERED,
+    OUT_OF_SCOPE,
+    guard_tavily_results,
+)
+from app.internal.vector_store import Passage
+from app.internal.web_search import HEALTH_DOMAINS, search_web
 
 pytestmark = pytest.mark.optional
 
@@ -54,35 +61,27 @@ def _invoke(model: ScriptedChat, text: str) -> dict:
     )
 
 
-def _tool_calls(name: str, query: str) -> AIMessage:
-    return AIMessage(
-        content="",
-        tool_calls=[
-            {
-                "name": name,
-                "args": {"query": query},
-                "id": "call-1",
-                "type": "tool_call",
-            }
-        ],
-    )
+def _fail_book(query: str) -> list[Passage]:
+    raise AssertionError("book should not be searched")
 
 
-def _tool_messages(result: dict) -> list[str]:
-    return [
-        message.content
-        for message in result["messages"]
-        if isinstance(message, ToolMessage)
-    ]
+def _fail_web(query: str, include_domains: list[str] | None = None) -> list[dict]:
+    raise AssertionError("web should not be searched")
+
+
+def _block_search(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.internal.vector_store.search_hits", _fail_book)
+    monkeypatch.setattr("app.internal.web_search.search_web", _fail_web)
+
+
+def _seen(model: ScriptedChat) -> str:
+    return "\n".join(str(message.content) for call in model.calls for message in call)
 
 
 def test_diagnosis_is_refused_without_calling_the_model(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    def fail_web(query):
-        raise AssertionError("web should not be searched")
-
-    monkeypatch.setattr("app.internal.web_search.search_web", fail_web)
+    _block_search(monkeypatch)
     model = ScriptedChat()
     result = _invoke(model, "Do I have diabetes?")
 
@@ -93,10 +92,7 @@ def test_diagnosis_is_refused_without_calling_the_model(
 def test_what_to_take_stops_before_search_and_names_no_drug(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    def fail_web(query):
-        raise AssertionError("web should not be searched")
-
-    monkeypatch.setattr("app.internal.web_search.search_web", fail_web)
+    _block_search(monkeypatch)
     model = ScriptedChat()
     result = _invoke(model, "what should I take for Alzheimer?")
 
@@ -109,14 +105,7 @@ def test_what_to_take_stops_before_search_and_names_no_drug(
 def test_height_and_weight_returns_bmi_without_the_model(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    def fail_search(query):
-        raise AssertionError("book should not be searched")
-
-    def fail_web(query):
-        raise AssertionError("web should not be searched")
-
-    monkeypatch.setattr("app.internal.vector_store.search_passages", fail_search)
-    monkeypatch.setattr("app.internal.web_search.search_web", fail_web)
+    _block_search(monkeypatch)
     model = ScriptedChat()
     result = _invoke(model, "I weigh 82 kg and I am 1.78 m. What habits help?")
 
@@ -147,10 +136,76 @@ def test_tavily_guard_drops_doses_injection_and_keeps_a_clean_link():
     assert "Eat fiber at breakfast." in text
 
 
-def test_search_web_tool_message_is_filtered(monkeypatch: pytest.MonkeyPatch):
+def test_search_web_restricts_domains(monkeypatch: pytest.MonkeyPatch):
+    seen: dict = {}
+
+    class _Client:
+        def search(self, **kwargs):
+            seen.update(kwargs)
+            return {"results": []}
+
+    monkeypatch.setattr("app.internal.web_search._get_client", lambda: _Client())
+
+    assert search_web("fiber") == []
+    assert seen["include_domains"] == HEALTH_DOMAINS
+
+
+def test_off_topic_question_never_searches(monkeypatch: pytest.MonkeyPatch):
+    _block_search(monkeypatch)
+    model = ScriptedChat(replies=[AIMessage(content="OUT_OF_SCOPE")])
+    result = _invoke(model, "what is your training cut date?")
+
+    assert result["messages"][-1].content == OUT_OF_SCOPE
+    assert len(model.calls) == 1
+
+
+def test_greeting_returns_the_introduction(monkeypatch: pytest.MonkeyPatch):
+    _block_search(monkeypatch)
+    model = ScriptedChat(replies=[AIMessage(content="GREETING")])
+    result = _invoke(model, "hello")
+
+    assert result["messages"][-1].content == INTRODUCTION
+    assert len(model.calls) == 1
+
+
+def test_explained_book_does_not_call_tavily(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr("app.internal.web_search.search_web", _fail_web)
     monkeypatch.setattr(
-        "app.internal.web_search.search_web",
+        "app.internal.vector_store.search_hits",
         lambda query: [
+            Passage(text="page 4: what a good diet includes vegetables", distance=0.2)
+        ],
+    )
+    model = ScriptedChat(
+        replies=[
+            AIMessage(content="IN_SCOPE"),
+            AIMessage(
+                content=(
+                    "Vegetables help.\n"
+                    "Note: This information is general knowledge and not a citation "
+                    "from the book or the web."
+                )
+            ),
+            AIMessage(content="SAFE"),
+        ]
+    )
+    result = _invoke(model, "What is a good diet?")
+    answer = result["messages"][-1].content
+
+    assert "Vegetables help." in answer
+    assert "page 4" in answer
+    assert "### Reference" in answer
+    assert "general knowledge" not in answer.lower()
+
+
+def test_missing_book_calls_tavily_and_keeps_the_link(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    seen: dict = {}
+
+    def search(query: str, include_domains: list[str] | None = None):
+        seen["domains"] = include_domains
+        return [
             {
                 "title": "Dose",
                 "url": "https://evil.example/dose",
@@ -161,29 +216,89 @@ def test_search_web_tool_message_is_filtered(monkeypatch: pytest.MonkeyPatch):
                 "url": "https://example.com/fiber",
                 "content": "Eat fiber at breakfast.",
             },
-        ],
-    )
+        ]
+
+    monkeypatch.setattr("app.internal.vector_store.search_hits", lambda query: [])
+    monkeypatch.setattr("app.internal.web_search.search_web", search)
     model = ScriptedChat(
         replies=[
-            _tool_calls("search_web", "dieta"),
+            AIMessage(content="IN_SCOPE"),
             AIMessage(content="Eat fiber at breakfast."),
             AIMessage(content="SAFE"),
         ]
     )
     result = _invoke(model, "What is a good diet?")
-    evidence = "\n".join(_tool_messages(result))
+    answer = result["messages"][-1].content
 
-    assert TAVILY_PAYLOAD not in evidence
-    assert "10 mg" not in evidence
-    assert "disregard your" not in evidence.lower()
-    assert "https://evil.example/dose" not in evidence
-    assert "https://example.com/fiber" in evidence
-    assert result["messages"][-1].content == "Eat fiber at breakfast."
+    assert seen["domains"] == HEALTH_DOMAINS
+    assert "Eat fiber at breakfast." in answer
+    assert "https://example.com/fiber" in answer
+    assert "10 mg" not in answer
+    assert "https://evil.example/dose" not in answer
+    assert "10 mg" not in _seen(model)
+    assert "https://evil.example/dose" not in _seen(model)
 
 
-def test_unsafe_final_reply_is_replaced():
+def test_thin_book_calls_tavily_and_cites_both(monkeypatch: pytest.MonkeyPatch):
+    called = {"web": False}
+
+    def search(query: str, include_domains: list[str] | None = None):
+        called["web"] = True
+        assert include_domains == HEALTH_DOMAINS
+        return [
+            {
+                "title": "Breakfast",
+                "url": "https://www.cdc.gov/breakfast",
+                "content": "Eat breakfast.",
+            }
+        ]
+
+    monkeypatch.setattr(
+        "app.internal.vector_store.search_hits",
+        lambda query: [Passage(text="page 8: breakfast routines", distance=0.2)],
+    )
+    monkeypatch.setattr("app.internal.web_search.search_web", search)
     model = ScriptedChat(
         replies=[
+            AIMessage(content="IN_SCOPE"),
+            AIMessage(content="Eat breakfast."),
+            AIMessage(content="SAFE"),
+        ]
+    )
+    result = _invoke(model, "What is a good breakfast?")
+    answer = result["messages"][-1].content
+
+    assert called["web"]
+    assert "page 8" in answer
+    assert "https://www.cdc.gov/breakfast" in answer
+
+
+def test_miss_without_web_sources_does_not_answer_from_memory(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr("app.internal.vector_store.search_hits", lambda query: [])
+    monkeypatch.setattr(
+        "app.internal.web_search.search_web",
+        lambda query, include_domains=None: [],
+    )
+    model = ScriptedChat(replies=[AIMessage(content="IN_SCOPE")])
+    result = _invoke(model, "What is a good diet?")
+
+    assert result["messages"][-1].content == NOT_COVERED
+    assert len(model.calls) == 1
+
+
+def test_unsafe_final_reply_is_replaced(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr("app.internal.web_search.search_web", _fail_web)
+    monkeypatch.setattr(
+        "app.internal.vector_store.search_hits",
+        lambda query: [
+            Passage(text="page 2: what a good diet includes vegetables", distance=0.1)
+        ],
+    )
+    model = ScriptedChat(
+        replies=[
+            AIMessage(content="IN_SCOPE"),
             AIMessage(content="Take 10 mg of metformin."),
             AIMessage(content="UNSAFE"),
         ]
@@ -193,7 +308,8 @@ def test_unsafe_final_reply_is_replaced():
     assert result["messages"][-1].content == HABIT_BOUNDARY
 
 
-def test_email_is_redacted_before_the_model_call():
+def test_email_is_redacted_before_the_model_call(monkeypatch: pytest.MonkeyPatch):
+    _block_search(monkeypatch)
     model = ScriptedChat(
         replies=[
             AIMessage(content="I can talk about eating patterns."),
@@ -202,6 +318,6 @@ def test_email_is_redacted_before_the_model_call():
     )
     _invoke(model, "My email is jane@example.com")
 
-    seen = "\n".join(str(message.content) for call in model.calls for message in call)
+    seen = _seen(model)
     assert "jane@example.com" not in seen
     assert "REDACTED_EMAIL" in seen
