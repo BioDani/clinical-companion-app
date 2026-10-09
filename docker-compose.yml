@@ -1,5 +1,17 @@
 name: clinical-companion
 
+x-agent-environment: &agent-environment
+  HF_TOKEN: ${HF_TOKEN:-}
+  HF_MODEL: ${HF_MODEL:-Qwen/Qwen3-4B-Instruct-2507}
+  HF_EMBEDDING_MODEL: ${HF_EMBEDDING_MODEL:-sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2}
+  WEAVIATE_HOST: weaviate
+  JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+  JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+  TAVILY_API_KEY: ${TAVILY_API_KEY:?Set TAVILY_API_KEY in .env}
+  LANGFUSE_PUBLIC_KEY: ${LANGFUSE_INIT_PROJECT_PUBLIC_KEY:?Set LANGFUSE_INIT_PROJECT_PUBLIC_KEY in .env}
+  LANGFUSE_SECRET_KEY: ${LANGFUSE_INIT_PROJECT_SECRET_KEY:?Set LANGFUSE_INIT_PROJECT_SECRET_KEY in .env}
+  LANGFUSE_BASE_URL: http://langfuse-web:3000
+
 services:
   rbac:
     # Identity service: https://github.com/ingjohnguerrero/fastapi_rbac
@@ -61,6 +73,31 @@ services:
       AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: "true"
       PERSISTENCE_DATA_PATH: "/var/lib/weaviate"
       CLUSTER_HOSTNAME: "node1"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://localhost:8080/v1/.well-known/ready",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  agent-index:
+    build:
+      context: ./agent
+    container_name: clinical-companion-agent-index
+    environment: *agent-environment
+    command: ["python", "-m", "app.internal.index_knowledge"]
+    depends_on:
+      weaviate:
+        condition: service_healthy
+    restart: on-failure
 
   agent:
     build:
@@ -68,24 +105,16 @@ services:
     container_name: clinical-companion-agent
     ports:
       - "8000:8000"
-    environment:
-      HF_TOKEN: ${HF_TOKEN:-}
-      HF_MODEL: ${HF_MODEL:-Qwen/Qwen3-4B-Instruct-2507}
-      HF_EMBEDDING_MODEL: ${HF_EMBEDDING_MODEL:-sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2}
-      WEAVIATE_HOST: weaviate
-      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
-      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
-      TAVILY_API_KEY: ${TAVILY_API_KEY:?Set TAVILY_API_KEY in .env}
-      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_INIT_PROJECT_PUBLIC_KEY:?Set LANGFUSE_INIT_PROJECT_PUBLIC_KEY in .env}
-      LANGFUSE_SECRET_KEY: ${LANGFUSE_INIT_PROJECT_SECRET_KEY:?Set LANGFUSE_INIT_PROJECT_SECRET_KEY in .env}
-      LANGFUSE_BASE_URL: http://langfuse-web:3000
+    environment: *agent-environment
     labels:
       - dev.orbstack.http-port=8000
     depends_on:
+      agent-index:
+        condition: service_completed_successfully
       rbac:
         condition: service_healthy
       weaviate:
-        condition: service_started
+        condition: service_healthy
       langfuse-web:
         condition: service_healthy
     healthcheck:
@@ -99,11 +128,11 @@ services:
       interval: 10s
       timeout: 3s
       retries: 5
-      start_period: 20s
+      start_period: 120s
     restart: unless-stopped
 
   open-webui:
-    image: ghcr.io/open-webui/open-webui:v0.11.3
+    image: ghcr.io/open-webui/open-webui:v0.11.4
     container_name: clinical-companion-ui
     ports:
       - "3000:8080"

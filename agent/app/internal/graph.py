@@ -63,16 +63,47 @@ class CompanionState(AgentState):
     citations: NotRequired[str]
 
 
-def format_book_reference(retrieved: str) -> str:
-    """Cite the ebook pages already tagged on the retrieved passages."""
-    pages: list[str] = []
-    for page in _PAGE.findall(retrieved or ""):
-        if page not in pages:
-            pages.append(page)
-    if not pages:
-        return ""
-    listed = ", ".join(f"page {page}" for page in pages)
-    return f"### Reference\n\n- {BOOK_TITLE}, {listed}"
+def format_book_reference(retrieved: str, hits: list | None = None) -> str:
+    """Cite the knowledge pages already tagged on the retrieved passages."""
+    grouped = _pages_by_source(hits or [])
+    if not grouped:
+        pages: list[str] = []
+        for page in _PAGE.findall(retrieved or ""):
+            if page not in pages:
+                pages.append(page)
+        if not pages:
+            return ""
+        listed = ", ".join(f"page {page}" for page in pages)
+        return f"### Reference\n\n- {BOOK_TITLE}, {listed}"
+    lines = [
+        f"- {source or BOOK_TITLE}, {', '.join(f'page {page}' for page in pages)}"
+        for source, pages in grouped
+    ]
+    return "### Reference\n\n" + "\n".join(lines)
+
+
+def _pages_by_source(hits: list) -> list[tuple[str, list[str]]]:
+    order: list[str] = []
+    pages: dict[str, list[str]] = {}
+    for hit in hits:
+        source = str(getattr(hit, "source", "") or "").strip()
+        label = _page_label(hit)
+        if not label:
+            continue
+        if source not in pages:
+            order.append(source)
+            pages[source] = []
+        if label not in pages[source]:
+            pages[source].append(label)
+    return [(source, pages[source]) for source in order]
+
+
+def _page_label(hit: object) -> str:
+    page = getattr(hit, "page", 0) or 0
+    if isinstance(page, int) and page > 0:
+        return str(page)
+    match = _PAGE.search(str(getattr(hit, "text", "") or ""))
+    return match.group(1) if match else ""
 
 
 def _scope_label(verdict: str) -> str:
@@ -90,9 +121,11 @@ def _book_text(hits: list) -> str:
     return "\n\n".join(hit.text for hit in hits if getattr(hit, "text", ""))
 
 
-def _citation_block(book: str, web_results: list[dict]) -> str:
+def _citation_block(
+    book: str, web_results: list[dict], hits: list | None = None
+) -> str:
     parts: list[str] = []
-    reference = format_book_reference(book)
+    reference = format_book_reference(book, hits)
     if reference:
         parts.append(reference)
     links = format_source_links(web_results)
@@ -107,7 +140,7 @@ def _evidence_message(book: str, web_text: str) -> str:
         "Do not say this is general knowledge."
     ]
     if book.strip():
-        parts.append(f"Book passages:\n{book.strip()}")
+        parts.append(f"Knowledge passages:\n{book.strip()}")
     if web_text.strip():
         parts.append(f"Web evidence:\n{web_text.strip()}")
     return "\n\n".join(parts)
@@ -164,7 +197,7 @@ class EvidenceMiddleware(AgentMiddleware):
         if grade == "miss" and not web_results:
             return _end(NOT_COVERED)
         return {
-            "citations": _citation_block(book, web_results),
+            "citations": _citation_block(book, web_results, hits if book else None),
             "messages": [HumanMessage(content=_evidence_message(book, web_text))],
         }
 
@@ -186,6 +219,27 @@ def _strip_general_knowledge(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
 
 
+_FIXED_REPLY = frozenset(
+    {REFUSAL, HABIT_BOUNDARY, INTRODUCTION, OUT_OF_SCOPE, NOT_COVERED}
+)
+
+_DECLINE = (
+    "cannot provide medical advice",
+    "recommend specific dosages",
+    "consult a healthcare",
+    "contact a clinician",
+)
+
+
+def _withholds_citations(text: str) -> bool:
+    """Fixed refusals and model-written declines are not cited answers."""
+    stripped = text.strip()
+    if stripped in _FIXED_REPLY or stripped.startswith("BMI "):
+        return True
+    lowered = stripped.lower()
+    return any(phrase in lowered for phrase in _DECLINE)
+
+
 class CitationMiddleware(AgentMiddleware):
     """Append the stored book and web citations to the final answer."""
 
@@ -201,7 +255,7 @@ class CitationMiddleware(AgentMiddleware):
             return
         content = last_message.content if isinstance(last_message.content, str) else ""
         body = _strip_general_knowledge(content)
-        if citations in body:
+        if _withholds_citations(body) or citations in body:
             last_message.content = body
             return
         last_message.content = f"{body}\n\n{citations}"

@@ -1,69 +1,74 @@
-"""Lazy search over the clinical companion ebook."""
+"""Load every PDF in the knowledge folder for the vector index."""
 
 from __future__ import annotations
 
+import hashlib
 import re
 from pathlib import Path
 
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-_EBOOK = (
-    Path(__file__).resolve().parents[2]
-    / "knowledge"
-    / "ebook_pilares_DrCarlosJaramillo_V2.pdf"
-)
+_KNOWLEDGE = Path(__file__).resolve().parents[2] / "knowledge"
 _TOKEN = re.compile(r"\w+", re.UNICODE)
 _LINE_HYPHEN = re.compile(r"(\w)\s*-\s*\n\s*(\w)")
 _LINE_BREAK = re.compile(r"\s*\n\s*")
+_CHUNK_SIZE = 1024
+_CHUNK_OVERLAP = 256
 
 
 def _tokens(text: str) -> set[str]:
     return {word for word in _TOKEN.findall(text.lower()) if len(word) > 2}
 
 
-class BookIndex:
-    """Load the ebook on first search and return the closest page-tagged passages."""
+def knowledge_pdfs(root: Path | None = None) -> list[Path]:
+    """Return the knowledge PDFs in filename order."""
+    folder = root or _KNOWLEDGE
+    if not folder.is_dir():
+        raise FileNotFoundError(f"Knowledge folder not found: {folder}")
+    pdfs = sorted(path for path in folder.glob("*.pdf") if path.is_file())
+    if not pdfs:
+        raise FileNotFoundError(f"No PDFs in {folder}")
+    return pdfs
 
-    def __init__(self, path: Path | None = None):
-        self.path = path or _EBOOK
-        self._chunks: list | None = None
 
-    def chunks(self) -> list:
-        """Return the ebook chunks used to build the vector index."""
-        return self._load()
+def corpus_fingerprint(root: Path | None = None) -> str:
+    """Hash each knowledge PDF so an unchanged folder can skip ingest."""
+    digest = hashlib.sha256()
+    for path in knowledge_pdfs(root):
+        digest.update(path.name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
 
-    def search(self, query: str) -> str:
-        scored: list[tuple[int, object]] = []
-        query_tokens = _tokens(query)
-        for chunk in self._load():
-            overlap = len(query_tokens & _tokens(chunk.page_content))
-            if overlap:
-                scored.append((overlap, chunk))
-        scored.sort(key=lambda item: item[0], reverse=True)
-        passages = [
-            _format_passage(chunk) for _, chunk in scored[:4]
-        ]
-        return "\n\n".join(passages)
 
-    def _load(self) -> list:
-        if self._chunks is None:
-            if not self.path.is_file():
-                raise FileNotFoundError(f"Ebook not found: {self.path}")
-            docs = PyPDFLoader(str(self.path)).load()
-            for doc in docs:
-                doc.page_content = _clean_text(doc.page_content)
-            splitter = RecursiveCharacterTextSplitter(chunk_size=1024, chunk_overlap=256)
-            self._chunks = splitter.split_documents(docs)
-        return self._chunks
+def load_pdf_chunks(path: Path) -> list:
+    """Split one PDF into cleaned chunks. An unreadable PDF raises."""
+    if not path.is_file():
+        raise FileNotFoundError(f"PDF not found: {path}")
+    docs = PyPDFLoader(str(path)).load()
+    cleaned = []
+    for doc in docs:
+        doc.page_content = _clean_text(doc.page_content)
+        if doc.page_content:
+            cleaned.append(doc)
+    if not cleaned:
+        return []
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=_CHUNK_SIZE,
+        chunk_overlap=_CHUNK_OVERLAP,
+    )
+    chunks = []
+    for chunk in splitter.split_documents(cleaned):
+        text = (chunk.page_content or "").strip()
+        if not text:
+            continue
+        chunk.page_content = text
+        chunks.append(chunk)
+    return chunks
 
 
 def _clean_text(text: str) -> str:
     text = _LINE_HYPHEN.sub(r"\1\2", text)
     return _LINE_BREAK.sub(" ", text).strip()
-
-
-def _format_passage(chunk) -> str:
-    page = chunk.metadata.get("page")
-    label = int(page) + 1 if isinstance(page, int) else "?"
-    return f"page {label}: {chunk.page_content.strip()}"

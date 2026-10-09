@@ -102,6 +102,7 @@ _INJECTION = re.compile(
     re.IGNORECASE,
 )
 _DOSE = re.compile(r"\b\d+(?:[.,]\d+)?\s*(?:mg|mcg|ml|iu)\b", re.IGNORECASE)
+_DOSE_QUESTION = re.compile(r"\b(?:dose|doses|dosis|dosage|dosages)\b", re.IGNORECASE)
 _SENTENCE = re.compile(r"(?<=[.!?])\s+")
 _PHONE = r"(?:\+?\d{1,3}[\s.-]?)?(?:\(\d{3}\)[\s.-]?|\d{3}[\s.-])\d{3}[\s.-]\d{4}|\b\d{10}\b"
 
@@ -144,6 +145,8 @@ def _blocked_reply(user_text: str) -> str | None:
     if any(phrase in text for phrase in _DANGEROUS):
         return REFUSAL
     if any(phrase in text for phrase in _TREATMENT):
+        return HABIT_BOUNDARY
+    if _DOSE_QUESTION.search(user_text) or _DOSE.search(user_text):
         return HABIT_BOUNDARY
     reading = BmiTool().from_text(user_text)
     if reading:
@@ -224,7 +227,7 @@ def _rewrite_tool_result(result: ToolMessage | Command) -> ToolMessage | Command
 
 
 class ContentFilterMiddleware(AgentMiddleware):
-    """Block diagnosis, treatment, and complete BMI readings before the model."""
+    """Block diagnosis, treatment, doses, and complete BMI readings before the model."""
 
     def _filter(self, state: AgentState) -> dict[str, Any] | None:
         reply = _blocked_reply(latest_human(state))
@@ -232,6 +235,7 @@ class ContentFilterMiddleware(AgentMiddleware):
             return None
         return {
             "messages": [AIMessage(content=reply)],
+            "citations": "",
             "jump_to": "end",
         }
 

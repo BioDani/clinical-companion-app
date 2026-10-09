@@ -34,6 +34,33 @@ def _completion_id() -> str:
     return f"chatcmpl-{uuid.uuid4().hex[:24]}"
 
 
+LOADING_STATUS = "Reviewing your question…"
+
+_STREAM_HEADERS = {
+    "Cache-Control": "no-cache",
+    "X-Accel-Buffering": "no",
+}
+
+
+def _sse(payload: dict[str, Any]) -> str:
+    return f"data: {json.dumps(payload)}\n\n"
+
+
+def _status_event(*, done: bool, hidden: bool) -> str:
+    return _sse(
+        {
+            "event": {
+                "type": "status",
+                "data": {
+                    "description": LOADING_STATUS,
+                    "done": done,
+                    "hidden": hidden,
+                },
+            }
+        }
+    )
+
+
 @router.get("/models")
 def list_models(
     _principal: Annotated[Principal, Depends(require_principal)],
@@ -65,40 +92,55 @@ def chat_completions(
     # checkpoint. A fresh thread keeps MemorySaver from concatenating;
     # pass X-Session-Id to persist.
     thread_id = session_id or str(uuid.uuid4())
-    text = run_companion(body.messages, thread_id, principal.user_id)
     created = int(time.time())
     completion_id = _completion_id()
     model = body.model or AGENT_MODEL_ID
 
     if body.stream:
-        first = {
-            "id": completion_id,
-            "object": "chat.completion.chunk",
-            "created": created,
-            "model": model,
-            "choices": [
-                {
-                    "index": 0,
-                    "delta": {"role": "assistant", "content": text},
-                    "finish_reason": None,
-                }
-            ],
-        }
-        last = {
-            "id": completion_id,
-            "object": "chat.completion.chunk",
-            "created": created,
-            "model": model,
-            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
-        }
 
         def events():
-            yield f"data: {json.dumps(first)}\n\n"
-            yield f"data: {json.dumps(last)}\n\n"
+            yield _status_event(done=False, hidden=False)
+            try:
+                text = run_companion(body.messages, thread_id, principal.user_id)
+            except HTTPException as exc:
+                detail = exc.detail if isinstance(exc.detail, str) else "Agent failed"
+                yield _sse({"error": {"message": detail, "code": exc.status_code}})
+                yield "data: [DONE]\n\n"
+                return
+            yield _status_event(done=True, hidden=True)
+            yield _sse(
+                {
+                    "id": completion_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": model,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"role": "assistant", "content": text},
+                            "finish_reason": None,
+                        }
+                    ],
+                }
+            )
+            yield _sse(
+                {
+                    "id": completion_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": model,
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                }
+            )
             yield "data: [DONE]\n\n"
 
-        return StreamingResponse(events(), media_type="text/event-stream")
+        return StreamingResponse(
+            events(),
+            media_type="text/event-stream",
+            headers=_STREAM_HEADERS,
+        )
 
+    text = run_companion(body.messages, thread_id, principal.user_id)
     return {
         "id": completion_id,
         "object": "chat.completion",

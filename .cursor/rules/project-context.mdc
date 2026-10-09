@@ -12,7 +12,7 @@ Compose project `clinical-companion`, started from `FinalProject/app`:
 - Open WebUI `v0.11.3` on port 3000. `WEBUI_AUTH` is off. It signs in to RBAC once and sends that JWT as `OPENAI_API_KEY`.
 - Agent on port 8000. FastAPI, OpenAI-compatible `/v1`.
 - RBAC on port 8001.
-- Weaviate collection `Pilares`. The ebook PDF stays in `agent/knowledge`.
+- Weaviate collection `Pilares`. Every PDF in `agent/knowledge` is indexed into it before the agent is healthy. A later start skips that work when those files are unchanged.
 - Langfuse on port 3001. Traces stay in this Compose project.
 
 Default chat model is `Qwen/Qwen3-4B-Instruct-2507` through the Hugging Face router. Embeddings use `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`.

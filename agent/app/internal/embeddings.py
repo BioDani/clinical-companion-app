@@ -1,4 +1,4 @@
-"""Hugging Face embeddings for ebook chunks and search queries."""
+"""Hugging Face embeddings for knowledge chunks and search queries."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ def sentence_vectors(raw: object, count: int) -> list[list[float]]:
 
 
 def embed_texts(texts: list[str]) -> list[list[float]]:
-    """Embed texts in batches so the whole ebook is not one request."""
+    """Embed texts in batches so the knowledge corpus is not one request."""
     if not texts:
         return []
     client = _client()

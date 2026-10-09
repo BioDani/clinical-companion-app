@@ -89,6 +89,59 @@ def test_diagnosis_is_refused_without_calling_the_model(
     assert model.calls == []
 
 
+def test_dose_question_is_refused_without_search_or_citations(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _block_search(monkeypatch)
+    for question in (
+        "what is the adequate dosis for Amoxicillin?",
+        "Is 500 mg enough?",
+    ):
+        model = ScriptedChat()
+        result = _invoke(model, question)
+        answer = result["messages"][-1].content
+
+        assert answer == HABIT_BOUNDARY
+        assert result.get("citations", "") == ""
+        assert "### Reference" not in answer
+        assert "### Sources" not in answer
+        assert model.calls == []
+
+
+def test_model_refusal_drops_retrieved_citations(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr("app.internal.web_search.search_web", _fail_web)
+    monkeypatch.setattr(
+        "app.internal.vector_store.search_hits",
+        lambda query: [
+            Passage(
+                text="DGA.pdf, page 12: what a good diet includes vegetables",
+                distance=0.2,
+                source="DGA.pdf",
+                page=12,
+            )
+        ],
+    )
+    model = ScriptedChat(
+        replies=[
+            AIMessage(content="IN_SCOPE"),
+            AIMessage(
+                content=(
+                    "I cannot provide medical advice or recommend specific dosages. "
+                    "Please consult a healthcare professional."
+                )
+            ),
+            AIMessage(content="SAFE"),
+        ]
+    )
+    result = _invoke(model, "What is a good diet?")
+    answer = result["messages"][-1].content
+
+    assert "cannot provide medical advice" in answer.lower()
+    assert "### Reference" not in answer
+    assert "### Sources" not in answer
+    assert "DGA.pdf" not in answer
+
+
 def test_what_to_take_stops_before_search_and_names_no_drug(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -166,6 +219,41 @@ def test_greeting_returns_the_introduction(monkeypatch: pytest.MonkeyPatch):
 
     assert result["messages"][-1].content == INTRODUCTION
     assert len(model.calls) == 1
+
+
+def test_two_knowledge_sources_are_cited(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr("app.internal.web_search.search_web", _fail_web)
+    monkeypatch.setattr(
+        "app.internal.vector_store.search_hits",
+        lambda query: [
+            Passage(
+                text="DGA.pdf, page 12: what a good diet includes vegetables",
+                distance=0.2,
+                source="DGA.pdf",
+                page=12,
+            ),
+            Passage(
+                text="WHO_TRS_916.pdf, page 4: what a good diet includes fruit",
+                distance=0.2,
+                source="WHO_TRS_916.pdf",
+                page=4,
+            ),
+        ],
+    )
+    model = ScriptedChat(
+        replies=[
+            AIMessage(content="IN_SCOPE"),
+            AIMessage(content="Vegetables and fruit help."),
+            AIMessage(content="SAFE"),
+        ]
+    )
+    result = _invoke(model, "What is a good diet?")
+    answer = result["messages"][-1].content
+
+    assert "Vegetables and fruit help." in answer
+    assert "### Reference" in answer
+    assert "DGA.pdf, page 12" in answer
+    assert "WHO_TRS_916.pdf, page 4" in answer
 
 
 def test_explained_book_does_not_call_tavily(monkeypatch: pytest.MonkeyPatch):
