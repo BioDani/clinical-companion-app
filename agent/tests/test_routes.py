@@ -6,11 +6,23 @@ import asyncio
 import json
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from app.config import AGENT_MODEL_ID
 from app.main import app, lifespan
+from app.routers.openai import LOADING_STATUS
+
+
+def test_health_stays_down_until_the_index_is_ready(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setattr("app.routers.health.indexed", lambda: False)
+    from app.routers.health import health
+
+    with pytest.raises(HTTPException) as caught:
+        health()
+    assert caught.value.status_code == 503
+    assert caught.value.detail == "indexing knowledge"
 
 
 def test_root_and_health_are_public(client: TestClient):
@@ -60,9 +72,10 @@ def test_chat_completion_uses_session_and_reply(
 ):
     seen: dict = {}
 
-    def run(messages, thread_id: str) -> str:
+    def run(messages, thread_id: str, user_id: str | None = None) -> str:
         seen["roles"] = [message.role for message in messages]
         seen["thread_id"] = thread_id
+        seen["user_id"] = user_id
         return "oats and fruit"
 
     monkeypatch.setattr("app.routers.openai.run_companion", run)
@@ -78,6 +91,7 @@ def test_chat_completion_uses_session_and_reply(
     assert response.status_code == 200
     body = response.json()
     assert seen["thread_id"] == "sess-9"
+    assert seen["user_id"] == "user-1"
     assert seen["roles"] == ["user"]
     assert body["object"] == "chat.completion"
     assert body["model"] == "custom-model"
@@ -101,8 +115,9 @@ def test_chat_without_session_mints_a_thread(
 ):
     seen: dict = {}
 
-    def run(messages, thread_id: str) -> str:
+    def run(messages, thread_id: str, user_id: str | None = None) -> str:
         seen["thread_id"] = thread_id
+        seen["user_id"] = user_id
         return "ok"
 
     monkeypatch.setattr("app.routers.openai.run_companion", run)
@@ -115,6 +130,7 @@ def test_chat_without_session_mints_a_thread(
     assert response.json()["model"] == AGENT_MODEL_ID
     assert seen["thread_id"]
     assert seen["thread_id"] != "user-1"
+    assert seen["user_id"] == "user-1"
 
 
 def test_chat_stream_emits_sse(
@@ -122,7 +138,10 @@ def test_chat_stream_emits_sse(
     auth_header: dict[str, str],
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setattr("app.routers.openai.run_companion", lambda messages, thread_id: "streamed")
+    monkeypatch.setattr(
+        "app.routers.openai.run_companion",
+        lambda messages, thread_id, user_id=None: "streamed",
+    )
     response = client.post(
         "/v1/chat/completions",
         headers=auth_header,
@@ -130,13 +149,50 @@ def test_chat_stream_emits_sse(
     )
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
+    assert response.headers["cache-control"] == "no-cache"
+    assert response.headers["x-accel-buffering"] == "no"
     data_lines = [line for line in response.text.splitlines() if line.startswith("data: ")]
     assert data_lines[-1] == "data: [DONE]"
-    first = json.loads(data_lines[0].removeprefix("data: "))
-    last = json.loads(data_lines[1].removeprefix("data: "))
+    loading = json.loads(data_lines[0].removeprefix("data: "))
+    cleared = json.loads(data_lines[1].removeprefix("data: "))
+    first = json.loads(data_lines[2].removeprefix("data: "))
+    last = json.loads(data_lines[3].removeprefix("data: "))
+    assert loading["event"] == {
+        "type": "status",
+        "data": {
+            "description": LOADING_STATUS,
+            "done": False,
+            "hidden": False,
+        },
+    }
+    assert cleared["event"]["data"]["done"] is True
+    assert cleared["event"]["data"]["hidden"] is True
     assert first["object"] == "chat.completion.chunk"
     assert first["choices"][0]["delta"]["content"] == "streamed"
     assert last["choices"][0]["finish_reason"] == "stop"
+
+
+def test_chat_stream_reports_agent_failure(
+    client: TestClient,
+    auth_header: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    def run(messages, thread_id: str, user_id: str | None = None) -> str:
+        raise HTTPException(status_code=502, detail="Agent failed: boom")
+
+    monkeypatch.setattr("app.routers.openai.run_companion", run)
+    response = client.post(
+        "/v1/chat/completions",
+        headers=auth_header,
+        json={"messages": [{"role": "user", "content": "hi"}], "stream": True},
+    )
+    assert response.status_code == 200
+    data_lines = [line for line in response.text.splitlines() if line.startswith("data: ")]
+    assert data_lines[-1] == "data: [DONE]"
+    loading = json.loads(data_lines[0].removeprefix("data: "))
+    error = json.loads(data_lines[1].removeprefix("data: "))
+    assert loading["event"]["data"]["done"] is False
+    assert error["error"] == {"message": "Agent failed: boom", "code": 502}
 
 
 def test_chat_requires_a_valid_token(client: TestClient):

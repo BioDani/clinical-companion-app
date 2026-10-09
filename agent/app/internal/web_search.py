@@ -6,6 +6,16 @@ load_dotenv()
 
 _client = None
 
+HEALTH_DOMAINS = [
+    "nih.gov",
+    "pubmed.ncbi.nlm.nih.gov",
+    "who.int",
+    "cdc.gov",
+    "medlineplus.gov",
+    "realfood.gov",
+    "usda.gov",
+]
+
 
 def _get_client():
     """Create the Tavily client on first search."""
@@ -20,8 +30,11 @@ def _get_client():
     return _client
 
 
-def search_web(query: str) -> list[dict]:
-    """Search the web and return relevant medical sources."""
+def search_web(
+    query: str,
+    include_domains: list[str] | None = None,
+) -> list[dict]:
+    """Search allowed health sites and return their sources."""
 
     if not query or not query.strip():
         raise ValueError("Search query cannot be empty.")
@@ -31,6 +44,7 @@ def search_web(query: str) -> list[dict]:
         search_depth="advanced",
         max_results=5,
         include_raw_content=False,
+        include_domains=list(HEALTH_DOMAINS if include_domains is None else include_domains),
     )
 
     return response.get("results", [])

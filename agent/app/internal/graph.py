@@ -1,514 +1,292 @@
-"""Clinical Companion: guard, then BMI, the book, the web, or general knowledge."""
+"""Clinical Companion: a LangChain agent with guardrail middleware."""
 
 from __future__ import annotations
 
-import operator
 import re
-from typing import Annotated, TypedDict
+from typing import Any, NotRequired
 
-from langchain_core.messages import (
-    AIMessage,
-    AnyMessage,
-    HumanMessage,
-    SystemMessage,
-)
+from langchain.agents import create_agent
+from langchain.agents.middleware import AgentMiddleware, AgentState, hook_config
+from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.graph import END, StateGraph
-from langgraph.graph.message import add_messages
+from langgraph.runtime import Runtime
 
-from .bmi import BmiTool
-from .book import BookIndex
-from .llm import complete
-
-
-SMALL_TALK_PROMPT = (
-    "You are Clinical Companion, a helpful assistant for diet, exercise, "
-    "and healthy habits. "
-    "You are not a diagnostic device and you do not replace a physician. "
-    "Keep answers concise. "
-    "If this is a greeting, introduce yourself as Clinical Companion."
+from .guardrails import (
+    HABIT_BOUNDARY,
+    INTRODUCTION,
+    NOT_COVERED,
+    NO_WEB_SOURCES,
+    OUT_OF_SCOPE,
+    REFUSAL,
+    ContentFilterMiddleware,
+    SafetyGuardrailMiddleware,
+    guard_tavily_results,
+    kept_tavily_results,
+    latest_human,
+    pii_middleware,
 )
-
-ASK_BMI_PROMPT = (
-    "You are Clinical Companion. "
-    "The user wants a BMI calculation but did not give both weight and height. "
-    "Ask for weight in kilograms and height in centimeters or meters. "
-    "Do not estimate the numbers. "
-    "Keep the reply short."
-)
-
-PLAN_PROMPT = (
-    "The ebook is in Spanish. "
-    "Write one line of Spanish search keywords that are likely to appear in the book. "
-    "Do not answer the question. Output keywords only."
-)
-
-GRADE_PROMPT = (
-    "You grade whether the retrieved passages contain enough information "
-    "to answer the user's question accurately. "
-    "Reply with exactly one word: SUFFICIENT or INSUFFICIENT."
-)
-
-ANSWER_PROMPT = (
-    "You are Clinical Companion, an informational wellness assistant. "
-    "Elaborate a short English answer from the retrieved passages. "
-    "Do not invent claims that are not in the retrieved text. "
-    "Do not include page numbers or a bibliography. "
-    "A reference is added after your reply. "
-    "Do not diagnose or prescribe. "
-    "Do not name a medication, a dose, or a treatment regimen. "
-    "If the passages mention drugs, leave them out. "
-    "Remind the user this is informational guidance only."
-)
-
-WEB_ANSWER_PROMPT = (
-    "You are Clinical Companion, an informational wellness assistant. "
-    "Answer the user's question using the retrieved web sources. "
-    "Synthesize the information rather than copying or quoting a single source. "
-    "Do not invent claims that are not supported by the retrieved sources. "
-    "Prefer relevant and authoritative sources when possible. "
-    "For current or recent information, consider the source dates when they are available. "
-    "Do not diagnose or prescribe. "
-    "Do not name a medication, a dose, or a treatment regimen. "
-    "If the sources mention drugs, leave them out and keep only lifestyle habits. "
-    "Keep the answer concise and clearly distinguish information from medical advice. "
-    "This is informational guidance only."
-)
-
-GENERAL_PROMPT = (
-    "You are Clinical Companion, an informational wellness assistant. "
-    "The curated book and the web search did not contain this answer. "
-    "Answer from general knowledge. "
-    "Say that this is general knowledge, not a citation from the book or the web. "
-    "Do not diagnose or prescribe. "
-    "Do not name a medication, a dose, or a treatment regimen. "
-    "Keep the answer concise. "
-    "Remind the user this is informational guidance only."
-)
-
-REFUSAL = (
-    "I can't help with diagnosis or treatment plans. "
-    "Please contact a clinician or specialist for this question. "
-    "This is informational guidance only."
-)
-
-HABIT_BOUNDARY = (
-    "I can't recommend medication or a treatment plan. "
-    "Please contact a clinician or specialist for this question. "
-    "I can talk about general lifestyle habits that support day-to-day wellbeing, "
-    "such as sleep, movement, and eating patterns. "
-    "This is informational guidance only."
-)
+from .llm import HuggingFaceChat
+from .web_search import HEALTH_DOMAINS, format_source_links
 
 BOOK_TITLE = "Dr. Carlos Jaramillo, Pilares"
 
-_DANGEROUS = (
-    "diagnos",
-    "prescribe",
-    "treatment plan",
-    "what medication",
-    "which medication",
-    "do i have",
+SYSTEM_PROMPT = (
+    "You are Clinical Companion, a helpful assistant for diet, exercise, "
+    "and healthy habits. "
+    "You are not a diagnostic device and you do not replace a physician. "
+    "Keep answers concise and in English. "
+    "Answer only from the evidence message in this turn. "
+    "Do not add facts from memory. "
+    "Do not say the answer is general knowledge. "
+    "Do not diagnose or prescribe. "
+    "Do not name a medication, a dose, or a treatment regimen. "
+    "If a source mentions drugs, leave them out and keep only lifestyle habits. "
+    "Remind the user this is informational guidance only."
 )
 
-_TREATMENT = (
-    "what should i take",
-    "what can i take",
-    "what do i take",
-    "what to take",
-    "should i take",
-    "what medicine",
-    "which medicine",
-    "what drug",
-    "which drug",
-    "medicine for",
-    "medication for",
-    "drug for",
-    "que debo tomar",
-    "qué debo tomar",
-    "que puedo tomar",
-    "qué puedo tomar",
-    "medicamento",
-    "medicina para",
+SCOPE_PROMPT = (
+    "Classify the user message for Clinical Companion. "
+    "Reply with only one of these labels: GREETING, IN_SCOPE, OUT_OF_SCOPE. "
+    "GREETING is a hello, thanks, or a short social opener with no health question. "
+    "IN_SCOPE is diet, exercise, sleep, nutrition, healthy habits, or related wellbeing. "
+    "OUT_OF_SCOPE is anything else, including the assistant's training, dates, "
+    "coding, news, or trivia."
 )
-
-_GREETINGS = {
-    "hello",
-    "hi",
-    "hey",
-    "thanks",
-    "thank you",
-    "bye",
-    "goodbye",
-    "good morning",
-    "good afternoon",
-    "good evening",
-    "how are you",
-    "who are you",
-    "what can you do",
-}
 
 _PAGE = re.compile(r"\bpage (\d+)\b")
-_BMI_WORD = re.compile(r"\bbmi\b|body mass", re.IGNORECASE)
+_GENERAL_KNOWLEDGE = re.compile(r"^.*general knowledge.*$", re.IGNORECASE | re.MULTILINE)
 
 
-class RouterAgentState(TypedDict):
-    messages: Annotated[list[AnyMessage], add_messages]
-    retrieved: str
-    web_sources: list[dict]
-    issues: Annotated[list[str], operator.add]
-    route: str
-    search_query: str
-    searches: int
-    coverage: str
+class CompanionState(AgentState):
+    """Agent state plus the citation block built from kept sources."""
+
+    citations: NotRequired[str]
 
 
-def guardrail(user_text: str) -> str | None:
-    """Return DANGEROUS or TREATMENT before any model or search call."""
-    text = user_text.lower()
-    if any(phrase in text for phrase in _DANGEROUS):
-        return "DANGEROUS"
-    if any(phrase in text for phrase in _TREATMENT):
-        return "TREATMENT"
-    return None
+def format_book_reference(retrieved: str, hits: list | None = None) -> str:
+    """Cite the knowledge pages already tagged on the retrieved passages."""
+    grouped = _pages_by_source(hits or [])
+    if not grouped:
+        pages: list[str] = []
+        for page in _PAGE.findall(retrieved or ""):
+            if page not in pages:
+                pages.append(page)
+        if not pages:
+            return ""
+        listed = ", ".join(f"page {page}" for page in pages)
+        return f"### Reference\n\n- {BOOK_TITLE}, {listed}"
+    lines = [
+        f"- {source or BOOK_TITLE}, {', '.join(f'page {page}' for page in pages)}"
+        for source, pages in grouped
+    ]
+    return "### Reference\n\n" + "\n".join(lines)
 
 
-def _latest_human(state: RouterAgentState) -> str:
-    """Return the most recent human message."""
-    for message in reversed(state.get("messages") or []):
-        if getattr(message, "type", "") == "human":
-            content = message.content
-            return content if isinstance(content, str) else str(content or "")
-    return ""
+def _pages_by_source(hits: list) -> list[tuple[str, list[str]]]:
+    order: list[str] = []
+    pages: dict[str, list[str]] = {}
+    for hit in hits:
+        source = str(getattr(hit, "source", "") or "").strip()
+        label = _page_label(hit)
+        if not label:
+            continue
+        if source not in pages:
+            order.append(source)
+            pages[source] = []
+        if label not in pages[source]:
+            pages[source].append(label)
+    return [(source, pages[source]) for source in order]
 
 
-def _normalized(text: str) -> str:
-    return text.strip().lower().rstrip("!?. ")
+def _page_label(hit: object) -> str:
+    page = getattr(hit, "page", 0) or 0
+    if isinstance(page, int) and page > 0:
+        return str(page)
+    match = _PAGE.search(str(getattr(hit, "text", "") or ""))
+    return match.group(1) if match else ""
 
 
-def _is_smalltalk(text: str) -> bool:
-    """Greetings, thanks, and questions about the assistant itself."""
-    normalized = _normalized(text)
-    if not normalized or normalized in _GREETINGS:
-        return True
-    first = normalized.split()[0]
-    if first in {"hello", "hi", "hey", "thanks", "bye", "goodbye"}:
-        return True
-    return normalized.startswith(
-        (
-            "thank you",
-            "good morning",
-            "good afternoon",
-            "good evening",
-            "how are you",
-            "who are you",
-            "what can you do",
+def _scope_label(verdict: str) -> str:
+    text = (verdict or "").upper()
+    if "OUT_OF_SCOPE" in text:
+        return "OUT_OF_SCOPE"
+    if "GREETING" in text:
+        return "GREETING"
+    if "IN_SCOPE" in text:
+        return "IN_SCOPE"
+    return "OUT_OF_SCOPE"
+
+
+def _book_text(hits: list) -> str:
+    return "\n\n".join(hit.text for hit in hits if getattr(hit, "text", ""))
+
+
+def _citation_block(
+    book: str, web_results: list[dict], hits: list | None = None
+) -> str:
+    parts: list[str] = []
+    reference = format_book_reference(book, hits)
+    if reference:
+        parts.append(reference)
+    links = format_source_links(web_results)
+    if links:
+        parts.append(links)
+    return "\n\n".join(parts)
+
+
+def _evidence_message(book: str, web_text: str) -> str:
+    parts = [
+        "Use only the evidence below. Do not add facts from memory. "
+        "Do not say this is general knowledge."
+    ]
+    if book.strip():
+        parts.append(f"Knowledge passages:\n{book.strip()}")
+    if web_text.strip():
+        parts.append(f"Web evidence:\n{web_text.strip()}")
+    return "\n\n".join(parts)
+
+
+def _end(reply: str) -> dict[str, Any]:
+    return {
+        "messages": [AIMessage(content=reply)],
+        "citations": "",
+        "jump_to": "end",
+    }
+
+
+class EvidenceMiddleware(AgentMiddleware):
+    """Classify scope, retrieve evidence, and store the citation block."""
+
+    state_schema = CompanionState
+
+    def __init__(self, model) -> None:
+        super().__init__()
+        self.model = model
+
+    def _prepare(self, state: CompanionState) -> dict[str, Any] | None:
+        question = latest_human(state)
+        verdict = self.model.invoke(
+            [
+                {"role": "system", "content": SCOPE_PROMPT},
+                {"role": "user", "content": question},
+            ]
         )
+        label = _scope_label(getattr(verdict, "content", verdict))
+        if label == "GREETING":
+            return _end(INTRODUCTION)
+        if label == "OUT_OF_SCOPE":
+            return _end(OUT_OF_SCOPE)
+
+        from .vector_store import grade_coverage, search_hits
+
+        hits = search_hits(question)
+        grade = grade_coverage(question, hits)
+        book = "" if grade == "miss" else _book_text(hits)
+        web_results: list[dict] = []
+        web_text = ""
+        if grade != "explained":
+            from .web_search import search_web
+
+            web_results = kept_tavily_results(
+                search_web(question, include_domains=list(HEALTH_DOMAINS))
+            )
+            web_text = guard_tavily_results(web_results)
+            if web_text == NO_WEB_SOURCES:
+                web_text = ""
+                web_results = []
+        if grade == "miss" and not web_results:
+            return _end(NOT_COVERED)
+        return {
+            "citations": _citation_block(book, web_results, hits if book else None),
+            "messages": [HumanMessage(content=_evidence_message(book, web_text))],
+        }
+
+    @hook_config(can_jump_to=["end"])
+    def before_model(
+        self, state: CompanionState, runtime: Runtime
+    ) -> dict[str, Any] | None:
+        return self._prepare(state)
+
+    @hook_config(can_jump_to=["end"])
+    async def abefore_model(
+        self, state: CompanionState, runtime: Runtime
+    ) -> dict[str, Any] | None:
+        return self._prepare(state)
+
+
+def _strip_general_knowledge(text: str) -> str:
+    cleaned = _GENERAL_KNOWLEDGE.sub("", text)
+    return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+
+
+_FIXED_REPLY = frozenset(
+    {REFUSAL, HABIT_BOUNDARY, INTRODUCTION, OUT_OF_SCOPE, NOT_COVERED}
+)
+
+_DECLINE = (
+    "cannot provide medical advice",
+    "recommend specific dosages",
+    "consult a healthcare",
+    "contact a clinician",
+)
+
+
+def _withholds_citations(text: str) -> bool:
+    """Fixed refusals and model-written declines are not cited answers."""
+    stripped = text.strip()
+    if stripped in _FIXED_REPLY or stripped.startswith("BMI "):
+        return True
+    lowered = stripped.lower()
+    return any(phrase in lowered for phrase in _DECLINE)
+
+
+class CitationMiddleware(AgentMiddleware):
+    """Append the stored book and web citations to the final answer."""
+
+    def _attach(self, state: CompanionState) -> None:
+        citations = str(state.get("citations") or "").strip()
+        if not citations:
+            return
+        messages = state.get("messages") or []
+        if not messages:
+            return
+        last_message = messages[-1]
+        if not isinstance(last_message, AIMessage):
+            return
+        content = last_message.content if isinstance(last_message.content, str) else ""
+        body = _strip_general_knowledge(content)
+        if _withholds_citations(body) or citations in body:
+            last_message.content = body
+            return
+        last_message.content = f"{body}\n\n{citations}"
+
+    def after_agent(self, state: CompanionState, runtime: Runtime) -> dict[str, Any] | None:
+        self._attach(state)
+        return None
+
+    async def aafter_agent(
+        self, state: CompanionState, runtime: Runtime
+    ) -> dict[str, Any] | None:
+        self._attach(state)
+        return None
+
+
+def build_companion(model=None):
+    """Build the companion agent with the guardrail middleware stack."""
+    chat = HuggingFaceChat() if model is None else model
+    return create_agent(
+        model=chat,
+        tools=[],
+        system_prompt=SYSTEM_PROMPT,
+        middleware=[
+            ContentFilterMiddleware(),
+            *pii_middleware(),
+            EvidenceMiddleware(chat),
+            SafetyGuardrailMiddleware(chat),
+            CitationMiddleware(),
+        ],
+        checkpointer=MemorySaver(),
     )
 
 
-def _asks_bmi(text: str) -> bool:
-    return _BMI_WORD.search(text) is not None
-
-
-def _tool_readings(question: str, tools: list | None = None) -> list[str]:
-    """Run configured tools and return any readings they produce."""
-    readings: list[str] = []
-    for tool in tools if tools is not None else (BmiTool(),):
-        reading = tool.from_text(question)
-        if reading:
-            readings.append(reading)
-    return readings
-
-
-def _first_line(text: str) -> str:
-    stripped = text.strip()
-    if not stripped:
-        return ""
-    return stripped.splitlines()[0].strip()
-
-
-def _first_word(text: str) -> str:
-    line = _first_line(text)
-    if not line:
-        return ""
-    return line.split()[0].strip(".,:;").upper()
-
-
-def format_book_reference(retrieved: str) -> str:
-    """Cite the ebook pages already tagged on the retrieved passages."""
-    pages: list[str] = []
-    for page in _PAGE.findall(retrieved or ""):
-        if page not in pages:
-            pages.append(page)
-    if not pages:
-        return ""
-    listed = ", ".join(f"page {page}" for page in pages)
-    return f"### Reference\n\n- {BOOK_TITLE}, {listed}"
-
-
-def _with_footer(text: str, footer: str) -> str:
-    body = text.rstrip()
-    if not footer:
-        return body
-    return f"{body}\n\n{footer}"
-
-
-def _stop_with(state: RouterAgentState, content: str) -> dict:
-    question = _latest_human(state)
-    update: dict = {"messages": [AIMessage(content=content)]}
-    if question:
-        update["issues"] = [question]
-    return update
-
-
-class DangerousAgent:
-    """Handle requests that require a diagnosis."""
-
-    def respond(self, state: RouterAgentState) -> dict:
-        return _stop_with(state, REFUSAL)
-
-
-class HabitBoundaryAgent:
-    """Refuse medication and treatment, and offer lifestyle habits only."""
-
-    def respond(self, state: RouterAgentState) -> dict:
-        return _stop_with(state, HABIT_BOUNDARY)
-
-
-class RagAgent:
-    """Search the ebook once, then answer or leave the question for the web."""
-
-    def __init__(self, book: BookIndex | None = None):
-        self.book = book or BookIndex()
-
-    def search(self, state: RouterAgentState) -> dict:
-        """Plan Spanish keywords and search the ebook once."""
-        question = _latest_human(state)
-        query = _first_line(
-            complete(
-                [
-                    SystemMessage(content=PLAN_PROMPT),
-                    HumanMessage(content=question),
-                ]
-            )
-        ) or question
-        return {
-            "search_query": query,
-            "retrieved": self.book.search(query),
-            "web_sources": [],
-            "searches": 1,
-            "coverage": "",
-        }
-
-    def grade(self, state: RouterAgentState) -> dict:
-        """Grade retrieved passages. Empty retrieval is a miss, with no model call."""
-        retrieved = (state.get("retrieved") or "").strip()
-        if not retrieved:
-            return {"coverage": "MISS"}
-        text = complete(
-            [
-                SystemMessage(content=GRADE_PROMPT),
-                HumanMessage(content=_latest_human(state)),
-                SystemMessage(content=f"Retrieved context:\n{retrieved}"),
-            ]
-        )
-        coverage = "SUFFICIENT" if _first_word(text) == "SUFFICIENT" else "MISS"
-        return {"coverage": coverage}
-
-    def choose_after_grade(self, state: RouterAgentState) -> str:
-        if (state.get("coverage") or "").strip().upper() == "SUFFICIENT":
-            return "rag_answer"
-        return "web_search"
-
-    def answer(self, state: RouterAgentState) -> dict:
-        """Elaborate from the book and append the page reference."""
-        messages: list[AnyMessage] = [SystemMessage(content=ANSWER_PROMPT)]
-        messages.extend(state.get("messages") or [])
-        retrieved = (state.get("retrieved") or "").strip()
-        if not retrieved:
-            retrieved = "The book does not cover this question."
-        messages.append(SystemMessage(content=f"Retrieved context:\n{retrieved}"))
-        text = complete(messages, max_tokens=1024)
-        return {
-            "messages": [
-                AIMessage(
-                    content=_with_footer(text, format_book_reference(state.get("retrieved") or ""))
-                )
-            ]
-        }
-
-
-class ToolsAgent:
-    """Handle deterministic calculations such as BMI."""
-
-    def __init__(self, tools: list | None = None):
-        self.tools = list(tools) if tools is not None else [BmiTool()]
-
-    def respond(self, state: RouterAgentState) -> dict:
-        lines = _tool_readings(_latest_human(state), self.tools)
-        if not lines:
-            return {}
-        return {"messages": [AIMessage(content="\n".join(lines))]}
-
-
-class WebSearchAgent:
-    """Search the public web using Tavily and answer from web sources."""
-
-    def search(self, state: RouterAgentState) -> dict:
-        from .web_search import format_search_results, search_web
-
-        question = _latest_human(state)
-        results = search_web(question)
-        return {
-            "retrieved": format_search_results(results),
-            "web_sources": results,
-        }
-
-    def choose_after_search(self, state: RouterAgentState) -> str:
-        if state.get("web_sources"):
-            return "web_answer"
-        return "general"
-
-    def answer(self, state: RouterAgentState) -> dict:
-        from .web_search import format_source_links
-
-        question = _latest_human(state)
-        retrieved = (state.get("retrieved") or "").strip()
-        if not retrieved:
-            retrieved = "No web sources were found for this question."
-        text = complete(
-            [
-                SystemMessage(content=WEB_ANSWER_PROMPT),
-                HumanMessage(content=question),
-                SystemMessage(content=f"Web evidence:\n{retrieved}"),
-            ],
-            max_tokens=1024,
-        )
-        return {
-            "messages": [
-                AIMessage(
-                    content=_with_footer(
-                        text,
-                        format_source_links(state.get("web_sources") or []),
-                    )
-                )
-            ]
-        }
-
-
-class GeneralAgent:
-    """Answer from model knowledge after the book and the web miss."""
-
-    def answer(self, state: RouterAgentState) -> dict:
-        text = complete(
-            [
-                SystemMessage(content=GENERAL_PROMPT),
-                HumanMessage(content=_latest_human(state)),
-            ],
-            max_tokens=1024,
-        )
-        return {"messages": [AIMessage(content=text)]}
-
-
-class _ChatModel:
-    """`.invoke` adapter so smalltalk can call the smolagents `complete` helper."""
-
-    def invoke(self, messages):
-        return AIMessage(content=complete(messages))
-
-
-class RouterAgent:
-    """Build and compile the Clinical Companion graph."""
-
-    def __init__(self, model, smalltalk_prompt, debug=False):
-        self.smalltalk_prompt = smalltalk_prompt
-        self.model = model
-        self.debug = debug
-        self.dangerous = DangerousAgent()
-        self.habits = HabitBoundaryAgent()
-        self.rag = RagAgent()
-        self.tools = ToolsAgent()
-        self.web = WebSearchAgent()
-        self.general = GeneralAgent()
-
-        graph = StateGraph(RouterAgentState)
-        graph.add_node("guard", self.apply_guard)
-        graph.add_node("refuse", self.dangerous.respond)
-        graph.add_node("habits", self.habits.respond)
-        graph.add_node("classify", self.classify)
-        graph.add_node("smalltalk", self.respond_smalltalk)
-        graph.add_node("bmi", self.tools.respond)
-        graph.add_node("rag_search", self.rag.search)
-        graph.add_node("rag_grade", self.rag.grade)
-        graph.add_node("rag_answer", self.rag.answer)
-        graph.add_node("web_search", self.web.search)
-        graph.add_node("web_answer", self.web.answer)
-        graph.add_node("general", self.general.answer)
-
-        graph.add_conditional_edges(
-            "guard",
-            lambda state: state["route"],
-            {"DANGEROUS": "refuse", "TREATMENT": "habits", "SAFE": "classify"},
-        )
-        graph.add_conditional_edges(
-            "classify",
-            lambda state: state["route"],
-            {"SMALLTALK": "smalltalk", "BMI": "bmi", "KNOWLEDGE": "rag_search"},
-        )
-        graph.add_edge("rag_search", "rag_grade")
-        graph.add_conditional_edges(
-            "rag_grade",
-            self.rag.choose_after_grade,
-            {"rag_answer": "rag_answer", "web_search": "web_search"},
-        )
-        graph.add_conditional_edges(
-            "web_search",
-            self.web.choose_after_search,
-            {"web_answer": "web_answer", "general": "general"},
-        )
-        for node in ("refuse", "habits", "smalltalk", "bmi", "rag_answer", "web_answer", "general"):
-            graph.add_edge(node, END)
-        graph.set_entry_point("guard")
-        self.router_graph = graph.compile(checkpointer=MemorySaver())
-
-    def apply_guard(self, state: RouterAgentState) -> dict:
-        route = guardrail(_latest_human(state)) or "SAFE"
-        if self.debug:
-            print(f"Guard route {route}")
-        return {"route": route}
-
-    def classify(self, state: RouterAgentState) -> dict:
-        """Pick smalltalk, BMI, or the knowledge cascade without a model call."""
-        question = _latest_human(state)
-        if _tool_readings(question, self.tools.tools):
-            route = "BMI"
-        elif _is_smalltalk(question) or _asks_bmi(question):
-            route = "SMALLTALK"
-        else:
-            route = "KNOWLEDGE"
-        if self.debug:
-            print(f"Classify route {route}")
-        return {"route": route}
-
-    def respond_smalltalk(self, state: RouterAgentState) -> dict:
-        """Greet the user, or ask for the measurements a BMI calculation needs."""
-        question = _latest_human(state)
-        if _asks_bmi(question) and not _tool_readings(question, self.tools.tools):
-            prompt = ASK_BMI_PROMPT
-        else:
-            prompt = self.smalltalk_prompt
-        messages = [SystemMessage(content=prompt), *list(state.get("messages") or [])]
-        if self.debug:
-            print(f"Small talk received: {messages}")
-        result = self.model.invoke(messages)
-        return {"messages": [result]}
-
-
-def build_graph():
-    """Build and return the compiled companion graph."""
-    return RouterAgent(_ChatModel(), SMALL_TALK_PROMPT, debug=False).router_graph
-
-
-router_agent = RouterAgent(_ChatModel(), SMALL_TALK_PROMPT, debug=False)
-companion = router_agent.router_graph
+companion = build_companion()

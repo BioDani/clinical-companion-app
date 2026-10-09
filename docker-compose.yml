@@ -1,5 +1,17 @@
 name: clinical-companion
 
+x-agent-environment: &agent-environment
+  HF_TOKEN: ${HF_TOKEN:-}
+  HF_MODEL: ${HF_MODEL:-Qwen/Qwen3-4B-Instruct-2507}
+  HF_EMBEDDING_MODEL: ${HF_EMBEDDING_MODEL:-sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2}
+  WEAVIATE_HOST: weaviate
+  JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+  JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+  TAVILY_API_KEY: ${TAVILY_API_KEY:?Set TAVILY_API_KEY in .env}
+  LANGFUSE_PUBLIC_KEY: ${LANGFUSE_INIT_PROJECT_PUBLIC_KEY:?Set LANGFUSE_INIT_PROJECT_PUBLIC_KEY in .env}
+  LANGFUSE_SECRET_KEY: ${LANGFUSE_INIT_PROJECT_SECRET_KEY:?Set LANGFUSE_INIT_PROJECT_SECRET_KEY in .env}
+  LANGFUSE_BASE_URL: http://langfuse-web:3000
+
 services:
   rbac:
     # Identity service: https://github.com/ingjohnguerrero/fastapi_rbac
@@ -40,22 +52,70 @@ services:
       start_period: 25s
     restart: unless-stopped
 
+  weaviate:
+    command:
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --scheme
+      - http
+    image: cr.weaviate.io/semitechnologies/weaviate:1.39.7
+    container_name: clinical-companion-weaviate
+    ports:
+      - "8080:8080"
+      - "50051:50051"
+    volumes:
+      - weaviate_data:/var/lib/weaviate
+    restart: unless-stopped
+    environment:
+      QUERY_DEFAULTS_LIMIT: 25
+      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: "true"
+      PERSISTENCE_DATA_PATH: "/var/lib/weaviate"
+      CLUSTER_HOSTNAME: "node1"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://localhost:8080/v1/.well-known/ready",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  agent-index:
+    build:
+      context: ./agent
+    container_name: clinical-companion-agent-index
+    environment: *agent-environment
+    command: ["python", "-m", "app.internal.index_knowledge"]
+    depends_on:
+      weaviate:
+        condition: service_healthy
+    restart: on-failure
+
   agent:
     build:
       context: ./agent
     container_name: clinical-companion-agent
     ports:
       - "8000:8000"
-    environment:
-      HF_TOKEN: ${HF_TOKEN:-}
-      HF_MODEL: ${HF_MODEL:-Qwen/Qwen2.5-72B-Instruct}
-      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
-      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
-      TAVILY_API_KEY: ${TAVILY_API_KEY:?Set TAVILY_API_KEY in .env}
+    environment: *agent-environment
     labels:
       - dev.orbstack.http-port=8000
     depends_on:
+      agent-index:
+        condition: service_completed_successfully
       rbac:
+        condition: service_healthy
+      weaviate:
+        condition: service_healthy
+      langfuse-web:
         condition: service_healthy
     healthcheck:
       test:
@@ -68,11 +128,11 @@ services:
       interval: 10s
       timeout: 3s
       retries: 5
-      start_period: 20s
+      start_period: 120s
     restart: unless-stopped
 
   open-webui:
-    image: ghcr.io/open-webui/open-webui:v0.11.3
+    image: ghcr.io/open-webui/open-webui:v0.11.4
     container_name: clinical-companion-ui
     ports:
       - "3000:8080"
@@ -98,6 +158,172 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # Langfuse v4. UI is host port 3001 so Open WebUI keeps 3000.
+  # Postgres, ClickHouse, Redis, and MinIO stay on the Compose network.
+  # https://langfuse.com/self-hosting/deployment/docker-compose
+  langfuse-worker:
+    image: docker.langfuse.com/langfuse/langfuse-worker:4
+    container_name: clinical-companion-langfuse-worker
+    restart: unless-stopped
+    depends_on: &langfuse-depends-on
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    environment: &langfuse-env
+      NEXTAUTH_URL: http://localhost:3001
+      DATABASE_URL: postgresql://postgres:${LANGFUSE_POSTGRES_PASSWORD:?Set LANGFUSE_POSTGRES_PASSWORD in .env}@postgres:5432/postgres
+      SALT: ${LANGFUSE_SALT:?Set LANGFUSE_SALT in .env}
+      ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:?Set LANGFUSE_ENCRYPTION_KEY in .env}
+      TELEMETRY_ENABLED: "false"
+      LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "false"
+      CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD:?Set LANGFUSE_CLICKHOUSE_PASSWORD in .env}
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minio
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_MINIO_ROOT_PASSWORD:?Set LANGFUSE_MINIO_ROOT_PASSWORD in .env}
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
+      LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: minio
+      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_MINIO_ROOT_PASSWORD:?Set LANGFUSE_MINIO_ROOT_PASSWORD in .env}
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_AUTH: ${LANGFUSE_REDIS_AUTH:?Set LANGFUSE_REDIS_AUTH in .env}
+      LANGFUSE_BULLMQ_SKIP_REDIS_VERSION_CHECK: "false"
+
+  langfuse-web:
+    image: docker.langfuse.com/langfuse/langfuse:4
+    container_name: clinical-companion-langfuse
+    restart: unless-stopped
+    depends_on: *langfuse-depends-on
+    ports:
+      - "3001:3000"
+    labels:
+      - dev.orbstack.http-port=3000
+    environment:
+      <<: *langfuse-env
+      # Next.js otherwise binds only to the container hostname, so a
+      # 127.0.0.1 healthcheck is refused.
+      HOSTNAME: 0.0.0.0
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:?Set LANGFUSE_NEXTAUTH_SECRET in .env}
+      LANGFUSE_S3_MEDIA_UPLOAD_INTERNAL_ENDPOINT: http://minio:9000
+      LANGFUSE_INIT_ORG_ID: ${LANGFUSE_INIT_ORG_ID:-clinical-companion}
+      LANGFUSE_INIT_ORG_NAME: ${LANGFUSE_INIT_ORG_NAME:-Clinical Companion}
+      LANGFUSE_INIT_PROJECT_ID: ${LANGFUSE_INIT_PROJECT_ID:-clinical-companion}
+      LANGFUSE_INIT_PROJECT_NAME: ${LANGFUSE_INIT_PROJECT_NAME:-Clinical Companion}
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_INIT_PROJECT_PUBLIC_KEY:?Set LANGFUSE_INIT_PROJECT_PUBLIC_KEY in .env}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_INIT_PROJECT_SECRET_KEY:?Set LANGFUSE_INIT_PROJECT_SECRET_KEY in .env}
+      LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_INIT_USER_EMAIL:-admin@example.com}
+      LANGFUSE_INIT_USER_NAME: ${LANGFUSE_INIT_USER_NAME:-admin}
+      LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:?Set LANGFUSE_INIT_USER_PASSWORD in .env}
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://127.0.0.1:3000/api/public/ready",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 120s
+      start_interval: 5s
+
+  clickhouse:
+    image: docker.io/clickhouse/clickhouse-server:25.12
+    container_name: clinical-companion-langfuse-clickhouse
+    restart: unless-stopped
+    user: "101:101"
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD:?Set LANGFUSE_CLICKHOUSE_PASSWORD in .env}
+    volumes:
+      - langfuse_clickhouse_data:/var/lib/clickhouse
+      - langfuse_clickhouse_logs:/var/log/clickhouse-server
+    healthcheck:
+      test: wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  minio:
+    image: cgr.dev/chainguard/minio
+    container_name: clinical-companion-langfuse-minio
+    restart: unless-stopped
+    entrypoint: sh
+    command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: ${LANGFUSE_MINIO_ROOT_PASSWORD:?Set LANGFUSE_MINIO_ROOT_PASSWORD in .env}
+    volumes:
+      - langfuse_minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  redis:
+    image: docker.io/redis:7
+    container_name: clinical-companion-langfuse-redis
+    restart: unless-stopped
+    command: >
+      --requirepass ${LANGFUSE_REDIS_AUTH:?Set LANGFUSE_REDIS_AUTH in .env}
+      --maxmemory-policy noeviction
+    environment:
+      REDISCLI_AUTH: ${LANGFUSE_REDIS_AUTH:?Set LANGFUSE_REDIS_AUTH in .env}
+    volumes:
+      - langfuse_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 10s
+      retries: 10
+
+  postgres:
+    image: docker.io/postgres:17
+    container_name: clinical-companion-langfuse-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${LANGFUSE_POSTGRES_PASSWORD:?Set LANGFUSE_POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: postgres
+      TZ: UTC
+      PGTZ: UTC
+    volumes:
+      - langfuse_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
 volumes:
   open-webui-data:
   rbac-data:
+  weaviate_data:
+  langfuse_postgres_data:
+  langfuse_clickhouse_data:
+  langfuse_clickhouse_logs:
+  langfuse_minio_data:
+  langfuse_redis_data:

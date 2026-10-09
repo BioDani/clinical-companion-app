@@ -8,9 +8,11 @@ import pytest
 from fastapi import HTTPException
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
+from app.config import langfuse_enabled
 from app.dependencies import (
     RETRY_REPLY,
     get_session_id,
+    invoke_config,
     last_assistant,
     message_text,
     run_companion,
@@ -129,12 +131,7 @@ def test_run_companion_returns_last_assistant_text(monkeypatch: pytest.MonkeyPat
 
     assert text == "done"
     assert captured["config"]["configurable"]["thread_id"] == "thread-1"
-    assert captured["state"]["retrieved"] == ""
-    assert captured["state"]["issues"] == []
-    assert captured["state"]["route"] == ""
-    assert captured["state"]["search_query"] == ""
-    assert captured["state"]["searches"] == 0
-    assert captured["state"]["coverage"] == ""
+    assert "callbacks" not in captured["config"]
     assert isinstance(captured["state"]["messages"][0], HumanMessage)
     assert captured["state"]["messages"][0].content == "hi"
 
@@ -172,6 +169,58 @@ def test_run_companion_maps_value_error_to_503(monkeypatch: pytest.MonkeyPatch):
         run_companion([SimpleNamespace(role="user", content="hi")], "t")
     assert exc.value.status_code == 503
     assert exc.value.detail == "Set HF_TOKEN"
+
+
+def test_langfuse_stays_off_during_pytest_even_with_keys(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-lf-test")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-lf-test")
+    assert langfuse_enabled() is False
+
+
+def test_langfuse_enabled_needs_both_keys_outside_pytest(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delenv("LANGFUSE_PUBLIC_KEY", raising=False)
+    monkeypatch.delenv("LANGFUSE_SECRET_KEY", raising=False)
+    assert langfuse_enabled() is False
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-lf-test")
+    assert langfuse_enabled() is False
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-lf-test")
+    assert langfuse_enabled() is True
+
+
+def test_invoke_config_adds_langfuse_callback_when_tracing_is_on(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class Handler:
+        pass
+
+    monkeypatch.setattr("app.dependencies.langfuse_enabled", lambda: True)
+    monkeypatch.setattr("langfuse.langchain.CallbackHandler", Handler)
+
+    config = invoke_config("thread-1", "user-9")
+
+    assert config["configurable"]["thread_id"] == "thread-1"
+    assert isinstance(config["callbacks"][0], Handler)
+    assert config["metadata"] == {
+        "langfuse_session_id": "thread-1",
+        "langfuse_user_id": "user-9",
+        "langfuse_tags": ["clinical-companion"],
+    }
+
+
+def test_invoke_config_omits_user_when_tracing_has_no_subject(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class Handler:
+        pass
+
+    monkeypatch.setattr("app.dependencies.langfuse_enabled", lambda: True)
+    monkeypatch.setattr("langfuse.langchain.CallbackHandler", Handler)
+
+    config = invoke_config("thread-1")
+
+    assert "langfuse_user_id" not in config["metadata"]
+    assert config["metadata"]["langfuse_session_id"] == "thread-1"
 
 
 def test_run_companion_maps_other_errors_to_502(monkeypatch: pytest.MonkeyPatch):
