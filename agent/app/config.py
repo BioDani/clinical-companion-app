@@ -51,9 +51,17 @@ def jwt_algorithm() -> str:
 
 
 def langfuse_enabled() -> bool:
-    """True when both Langfuse keys are set and this process is not pytest."""
+    """True when both Langfuse keys are set and this process is not pytest.
+
+    Compose sets LANGFUSE_ENABLED to 1 only when COMPOSE_PROFILES includes
+    langfuse. An empty or false value keeps traces off even if the keys exist.
+    """
     if os.environ.get("PYTEST_CURRENT_TEST"):
         return False
+    if "LANGFUSE_ENABLED" in os.environ:
+        switch = os.environ["LANGFUSE_ENABLED"].strip().lower()
+        if switch in {"", "0", "false", "off", "no"}:
+            return False
     public = (os.getenv("LANGFUSE_PUBLIC_KEY") or "").strip()
     secret = (os.getenv("LANGFUSE_SECRET_KEY") or "").strip()
     return bool(public and secret)

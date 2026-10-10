@@ -9,6 +9,7 @@ No model weights are stored in the image. Inference goes out to Hugging Face (`H
 | Service | URL | Role |
 | --- | --- | --- |
 | `rbac` | http://localhost:8001/docs | Identity: `POST /auth/login`, users, roles |
+| `rbac-admin` | http://localhost:3002 | Admin console for accounts and roles. Sign in with `ADMIN_USERNAME` (default `admin`) and `ADMIN_PASSWORD`. The email is not the login name. |
 | `agent` | http://localhost:8000 | FastAPI + LangGraph (`/health` public; `/v1/*` needs Bearer JWT) |
 | `open-webui` | http://localhost:3000 | Chat UI pointed at the agent (boots with a token from rbac) |
 | `langfuse-web` | http://localhost:3001 | Local traces for each agent turn |
@@ -36,9 +37,9 @@ Authorize is token-first: rbac puts `sub`, `role`, and `permissions` in an HS256
    docker compose up --build
    ```
 
-3. Open http://localhost:3000 and select the **clinical-companion** model.
+3. Open http://localhost:3000 and select the **clinical-companion** model. The admin console is at http://localhost:3002. Sign in there with `ADMIN_USERNAME` and `ADMIN_PASSWORD`, not the admin email.
 
-Langfuse is at http://localhost:3001. Sign in with `LANGFUSE_INIT_USER_EMAIL` and `LANGFUSE_INIT_USER_PASSWORD`. After one chat completion, the project shows a trace for that turn: session id from `X-Session-Id` (or the request's thread id), user id from the JWT `sub`, and tag `clinical-companion`. Open WebUI uses one admin token, so every UI chat is that same subject. Traces stay in the Compose volumes.
+Langfuse starts only when `COMPOSE_PROFILES=langfuse` in `.env` (the example default). Leave that line empty to skip Langfuse and its databases, then stop any copies already running: `docker compose --profile langfuse stop`. With the profile set, Langfuse is at http://localhost:3001. Sign in with `LANGFUSE_INIT_USER_EMAIL` and `LANGFUSE_INIT_USER_PASSWORD`. After one chat completion, the project shows a trace for that turn: session id from `X-Session-Id` (or the request's thread id), user id from the JWT `sub`, and tag `clinical-companion`. Open WebUI uses one admin token, so every UI chat is that same subject. Traces stay in the Compose volumes.
 
 On OrbStack, Compose domains are `https://<service>.clinical-companion.orb.local`. Open rbac at **https://rbac.clinical-companion.orb.local/docs** (there is no app at `/`). Host ports still work: rbac `http://localhost:8001/docs`.
 
