@@ -7,6 +7,7 @@ after-agent safety check.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from typing import Any
@@ -335,5 +336,6 @@ class SafetyGuardrailMiddleware(AgentMiddleware):
     async def aafter_agent(
         self, state: AgentState, runtime: Runtime
     ) -> dict[str, Any] | None:
-        self._review(state)
+        del runtime
+        await asyncio.to_thread(self._review, state)
         return None

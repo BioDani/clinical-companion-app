@@ -14,3 +14,6 @@ PyJWT>=2.9.0
 tavily-python>=0.7
 weaviate-client>=4.16
 langfuse>=4,<5
+langgraph-cli[inmem]>=0.4
+langgraph-sdk>=0.2
+langgraph-checkpoint-sqlite>=2.0
