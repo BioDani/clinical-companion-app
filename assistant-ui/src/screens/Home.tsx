@@ -82,17 +82,25 @@ function LinkedText({ text }: { text: string }) {
   );
 }
 
-function TextMessage() {
+function TextMessage({ variant }: { variant: "user" | "assistant" }) {
   const text = useAuiState((state) =>
     state.message.content
       .map((part) => (part.type === "text" ? part.text : ""))
       .join(""),
   );
   return (
-    <MessagePrimitive.Root className="message">
+    <MessagePrimitive.Root className={`message message-${variant}`}>
       <LinkedText text={text} />
     </MessagePrimitive.Root>
   );
+}
+
+function UserMessage() {
+  return <TextMessage variant="user" />;
+}
+
+function AssistantMessage() {
+  return <TextMessage variant="assistant" />;
 }
 
 function Thread() {
@@ -105,8 +113,8 @@ function Thread() {
           </ThreadPrimitive.Empty>
           <ThreadPrimitive.Messages
             components={{
-              UserMessage: TextMessage,
-              AssistantMessage: TextMessage,
+              UserMessage,
+              AssistantMessage,
               SystemMessage: HiddenMessage,
             }}
           />

@@ -1,13 +1,17 @@
 :root {
-  --page: #0b1916;
-  --surface: #132924;
-  --sunken: #0e211e;
-  --border: #2a463e;
-  --text: #f3f7f4;
-  --muted: #a3c0b4;
-  --accent: #5ed4b4;
-  --accent-fill: #0f6e5c;
-  --danger: #f0b0a4;
+  --page: #f4f8f5;
+  --surface: #ffffff;
+  --sunken: #eef6f1;
+  --border: #d3e4da;
+  --text: #17342c;
+  --muted: #5b7368;
+  --accent: #1f7a5a;
+  --accent-fill: #14614c;
+  --danger: #9a3f38;
+  --bubble-user: #ffffff;
+  --bubble-user-border: #c9ddd2;
+  --bubble-assistant: #e4f3eb;
+  --bubble-assistant-border: #c5e4d4;
   --font: "Segoe UI", "Avenir Next", system-ui, sans-serif;
   color: var(--text);
   background: var(--page);
@@ -163,7 +167,18 @@ button:disabled { opacity: 0.45; cursor: default; }
   padding: 10px 12px;
   border-radius: 12px;
   background: var(--sunken);
+  border: 1px solid transparent;
   white-space: pre-wrap;
+}
+
+.message-user {
+  background: var(--bubble-user);
+  border-color: var(--bubble-user-border);
+}
+
+.message-assistant {
+  background: var(--bubble-assistant);
+  border-color: var(--bubble-assistant-border);
 }
 
 .message a { color: var(--accent); }
@@ -174,7 +189,7 @@ button:disabled { opacity: 0.45; cursor: default; }
 
 .product, .new-chat, .sign-out { flex-shrink: 0; }
 
-.sign-out { background: transparent; border: 1px solid var(--border); }
+.sign-out { background: transparent; border: 1px solid var(--border); color: var(--text); }
 
 @media (max-width: 720px) {
   .home {

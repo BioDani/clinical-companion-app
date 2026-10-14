@@ -1,15 +1,15 @@
 :root {
-  --page: #0b1916;
-  --surface: #132924;
-  --sunken: #0e211e;
-  --border: #2a463e;
-  --text: #f3f7f4;
-  --muted: #a3c0b4;
-  --accent: #5ed4b4;
-  --accent-fill: #0f6e5c;
-  --success: #8fcb9a;
-  --danger: #f0b0a4;
-  --danger-fill: #a33c36;
+  --page: #f4f8f5;
+  --surface: #ffffff;
+  --sunken: #eef6f1;
+  --border: #d3e4da;
+  --text: #17342c;
+  --muted: #5b7368;
+  --accent: #1f7a5a;
+  --accent-fill: #14614c;
+  --success: #1d7a48;
+  --danger: #9a3f38;
+  --danger-fill: #8e3832;
   --sidebar: 260px;
   --font: "Segoe UI", "Avenir Next", system-ui, sans-serif;
   color: var(--text);
@@ -83,7 +83,7 @@ input:focus, select:focus { outline: 2px solid var(--accent); border-color: tran
   border-radius: 8px;
   padding: 8px 14px;
   background: var(--accent-fill);
-  color: var(--text);
+  color: #ffffff;
 }
 
 .btn.wide { width: 100%; margin-top: 16px; padding: 10px 14px; }
@@ -145,6 +145,7 @@ input:focus, select:focus { outline: 2px solid var(--accent); border-color: tran
   height: 32px;
   border-radius: 50%;
   background: var(--accent-fill);
+  color: #ffffff;
   display: grid;
   place-items: center;
   text-transform: uppercase;
@@ -233,7 +234,7 @@ td { padding: 10px 16px; border-top: 1px solid var(--border); vertical-align: mi
   color: var(--muted);
 }
 
-.badge.admin { background: var(--accent-fill); color: var(--accent); border-color: transparent; }
+.badge.admin { background: #e5f3eb; color: var(--accent-fill); border-color: transparent; }
 
 .icon-btn {
   background: transparent;
@@ -288,8 +289,8 @@ td { padding: 10px 16px; border-top: 1px solid var(--border); vertical-align: mi
   font-size: 13px;
 }
 
-.callout.bad { background: rgba(163, 60, 54, 0.25); color: var(--danger); }
-.callout.good { background: rgba(15, 110, 92, 0.35); color: var(--success); }
+.callout.bad { background: rgba(154, 63, 56, 0.12); color: var(--danger); }
+.callout.good { background: rgba(31, 122, 90, 0.12); color: var(--success); }
 
 .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 
