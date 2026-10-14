@@ -49,7 +49,7 @@ async def lifespan(_app: FastAPI):
     _flush_langfuse()
 
 
-app = FastAPI(title="Clinical Companion agent", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Wellnest agent", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -63,4 +63,4 @@ app.include_router(openai.router)
 
 @app.get("/")
 def root() -> dict[str, str]:
-    return {"message": "Clinical Companion"}
+    return {"message": "Wellnest"}

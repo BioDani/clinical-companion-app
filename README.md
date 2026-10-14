@@ -1,4 +1,4 @@
-# Clinical Companion
+# Wellnest
 
 Local Docker boilerplate for the conversational agent: a Python **LangChain** agent that calls Hugging Face through the router. **Open WebUI** chats through `/v1`. The signed-in chat, **assistant-ui**, talks to the same agent through the LangGraph API on **companion-graph**. Login and access tokens come from **[fastapi_rbac](https://github.com/ingjohnguerrero/fastapi_rbac)**; the agent and companion-graph verify those JWTs locally.
 

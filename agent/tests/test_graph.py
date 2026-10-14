@@ -217,7 +217,11 @@ def test_greeting_returns_the_introduction(monkeypatch: pytest.MonkeyPatch):
     model = ScriptedChat(replies=[AIMessage(content="GREETING")])
     result = _invoke(model, "hello")
 
-    assert result["messages"][-1].content == INTRODUCTION
+    reply = result["messages"][-1].content
+    assert reply == INTRODUCTION
+    assert "Wellnest" in reply
+    assert "Your everyday wellness companion" in reply
+    assert "Clinical Companion" not in reply
     assert len(model.calls) == 1
 
 

@@ -32,7 +32,7 @@ from .web_search import HEALTH_DOMAINS, format_source_links
 BOOK_TITLE = "Dr. Carlos Jaramillo, Pilares"
 
 SYSTEM_PROMPT = (
-    "You are Clinical Companion, a helpful assistant for diet, exercise, "
+    "You are Wellnest, your everyday wellness companion for diet, exercise, "
     "and healthy habits. "
     "You are not a diagnostic device and you do not replace a physician. "
     "Keep answers concise and in English. "
@@ -46,7 +46,7 @@ SYSTEM_PROMPT = (
 )
 
 SCOPE_PROMPT = (
-    "Classify the user message for Clinical Companion. "
+    "Classify the user message for Wellnest. "
     "Reply with only one of these labels: GREETING, IN_SCOPE, OUT_OF_SCOPE. "
     "GREETING is a hello, thanks, or a short social opener with no health question. "
     "IN_SCOPE is diet, exercise, sleep, nutrition, healthy habits, or related wellbeing. "
