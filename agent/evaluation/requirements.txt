@@ -1,0 +1,4 @@
+clinical-companion
+langfuse>=4,<5
+pyyaml>=6.0
+pytest>=8.0
