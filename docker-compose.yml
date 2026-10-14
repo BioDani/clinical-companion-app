@@ -235,6 +235,9 @@ services:
       - "3000:8080"
     environment:
       OPENAI_API_BASE_URL: http://agent:8000/v1
+      # Default cache is 300s, so a recreated agent is dialed at its old IP
+      # and chat fails with "Server Connection Error" until the cache expires.
+      AIOHTTP_POOL_DNS_TTL: "0"
       ENABLE_OLLAMA_API: "false"
       ENABLE_OPENAI_API: "true"
       ENABLE_PERSISTENT_CONFIG: "false"
