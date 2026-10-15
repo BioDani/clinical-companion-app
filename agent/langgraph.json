@@ -1,0 +1,17 @@
+{
+  "$schema": "https://langgra.ph/schema.json",
+  "dependencies": ["."],
+  "graphs": {
+    "companion": "./companion_entry.py:make_companion_graph"
+  },
+  "auth": {
+    "path": "./app/internal/langgraph_auth.py:auth"
+  },
+  "checkpointer": {
+    "backend": "custom",
+    "path": "./app/internal/persistence.py:generate_checkpointer"
+  },
+  "http": {
+    "disable_store": true
+  }
+}

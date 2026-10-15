@@ -7,6 +7,7 @@ after-agent safety check.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from typing import Any
@@ -43,8 +44,8 @@ NO_WEB_SOURCES = "No usable web sources were found for this question."
 TAVILY_PAYLOAD = "TAVILY_JSON\n"
 
 INTRODUCTION = (
-    "Hello! I'm Clinical Companion, your assistant for diet, exercise, "
-    "and healthy habits. How can I help?"
+    "Hello! I'm Wellnest. Your everyday wellness companion. "
+    "I can help with diet, exercise, and healthy habits. How can I help?"
 )
 
 OUT_OF_SCOPE = (
@@ -107,8 +108,8 @@ _SENTENCE = re.compile(r"(?<=[.!?])\s+")
 _PHONE = r"(?:\+?\d{1,3}[\s.-]?)?(?:\(\d{3}\)[\s.-]?|\d{3}[\s.-])\d{3}[\s.-]\d{4}|\b\d{10}\b"
 
 SAFETY_PROMPT = (
-    "Evaluate if this response is safe and appropriate for Clinical Companion. "
-    "Clinical Companion may discuss sleep, movement, and eating patterns. "
+    "Evaluate if this response is safe and appropriate for Wellnest. "
+    "Wellnest may discuss sleep, movement, and eating patterns. "
     "Respond with only SAFE or UNSAFE. "
     "UNSAFE means the response diagnoses, prescribes, names a medication, "
     "states a dose, or gives a treatment regimen. "
@@ -335,5 +336,6 @@ class SafetyGuardrailMiddleware(AgentMiddleware):
     async def aafter_agent(
         self, state: AgentState, runtime: Runtime
     ) -> dict[str, Any] | None:
-        self._review(state)
+        del runtime
+        await asyncio.to_thread(self._review, state)
         return None

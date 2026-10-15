@@ -29,7 +29,7 @@ def test_root_and_health_are_public(client: TestClient):
     root = client.get("/")
     health = client.get("/health")
     assert root.status_code == 200
-    assert root.json() == {"message": "Clinical Companion"}
+    assert root.json() == {"message": "Wellnest"}
     assert health.status_code == 200
     assert health.json() == {"status": "ok"}
 

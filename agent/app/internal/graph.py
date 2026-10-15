@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from typing import Any, NotRequired
 
@@ -31,7 +32,7 @@ from .web_search import HEALTH_DOMAINS, format_source_links
 BOOK_TITLE = "Dr. Carlos Jaramillo, Pilares"
 
 SYSTEM_PROMPT = (
-    "You are Clinical Companion, a helpful assistant for diet, exercise, "
+    "You are Wellnest, your everyday wellness companion for diet, exercise, "
     "and healthy habits. "
     "You are not a diagnostic device and you do not replace a physician. "
     "Keep answers concise and in English. "
@@ -45,7 +46,7 @@ SYSTEM_PROMPT = (
 )
 
 SCOPE_PROMPT = (
-    "Classify the user message for Clinical Companion. "
+    "Classify the user message for Wellnest. "
     "Reply with only one of these labels: GREETING, IN_SCOPE, OUT_OF_SCOPE. "
     "GREETING is a hello, thanks, or a short social opener with no health question. "
     "IN_SCOPE is diet, exercise, sleep, nutrition, healthy habits, or related wellbeing. "
@@ -211,7 +212,8 @@ class EvidenceMiddleware(AgentMiddleware):
     async def abefore_model(
         self, state: CompanionState, runtime: Runtime
     ) -> dict[str, Any] | None:
-        return self._prepare(state)
+        del runtime
+        return await asyncio.to_thread(self._prepare, state)
 
 
 def _strip_general_knowledge(text: str) -> str:
@@ -271,6 +273,25 @@ class CitationMiddleware(AgentMiddleware):
         return None
 
 
+def _middleware(chat, *, with_memory: bool) -> list:
+    from .user_memory import UserMemoryMiddleware
+
+    stack: list = [
+        ContentFilterMiddleware(),
+        *pii_middleware(),
+    ]
+    if with_memory:
+        stack.append(UserMemoryMiddleware())
+    stack.extend(
+        [
+            EvidenceMiddleware(chat),
+            SafetyGuardrailMiddleware(chat),
+            CitationMiddleware(),
+        ]
+    )
+    return stack
+
+
 def build_companion(model=None):
     """Build the companion agent with the guardrail middleware stack."""
     chat = HuggingFaceChat() if model is None else model
@@ -278,15 +299,67 @@ def build_companion(model=None):
         model=chat,
         tools=[],
         system_prompt=SYSTEM_PROMPT,
-        middleware=[
-            ContentFilterMiddleware(),
-            *pii_middleware(),
-            EvidenceMiddleware(chat),
-            SafetyGuardrailMiddleware(chat),
-            CitationMiddleware(),
-        ],
+        middleware=_middleware(chat, with_memory=False),
         checkpointer=MemorySaver(),
     )
+
+
+def make_companion_graph(config: dict | None = None):
+    """Graph for the LangGraph API. The server supplies the checkpointer.
+
+    Personal notes are on this graph only. /v1 keeps MemorySaver and no store.
+    """
+    del config
+    from ..config import langfuse_enabled
+    from .persistence import open_memory_store
+
+    chat = HuggingFaceChat()
+    middleware = _middleware(chat, with_memory=True)
+    if langfuse_enabled():
+        middleware.insert(0, LangfuseRunMiddleware())
+    graph = create_agent(
+        model=chat,
+        tools=[],
+        system_prompt=SYSTEM_PROMPT,
+        middleware=middleware,
+        store=open_memory_store(),
+    )
+    if langfuse_enabled():
+        from langfuse.langchain import CallbackHandler
+
+        graph = graph.with_config({"callbacks": [CallbackHandler()]})
+    return graph
+
+
+class LangfuseRunMiddleware(AgentMiddleware):
+    """Stamp the thread and the account on the trace. No callback when tracing is off."""
+
+    def _stamp(self, runtime: Runtime) -> None:
+        config = getattr(runtime, "config", None)
+        if not isinstance(config, dict):
+            return
+        configurable = config.get("configurable") or {}
+        if not isinstance(configurable, dict):
+            return
+        metadata = config.setdefault("metadata", {})
+        if not isinstance(metadata, dict):
+            return
+        thread_id = configurable.get("thread_id")
+        user = configurable.get("langgraph_auth_user") or {}
+        identity = user.get("identity") if isinstance(user, dict) else getattr(user, "identity", None)
+        if thread_id:
+            metadata["langfuse_session_id"] = thread_id
+        if identity:
+            metadata["langfuse_user_id"] = identity
+        metadata["langfuse_tags"] = ["clinical-companion"]
+
+    def before_agent(self, state: AgentState, runtime: Runtime) -> None:
+        del state
+        self._stamp(runtime)
+
+    async def abefore_agent(self, state: AgentState, runtime: Runtime) -> None:
+        del state
+        self._stamp(runtime)
 
 
 companion = build_companion()

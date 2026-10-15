@@ -8,6 +8,9 @@ x-agent-environment: &agent-environment
   JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
   JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
   TAVILY_API_KEY: ${TAVILY_API_KEY:?Set TAVILY_API_KEY in .env}
+  # Empty when COMPOSE_PROFILES does not include langfuse, so the agent
+  # does not send traces to a service that is not running.
+  LANGFUSE_ENABLED: ${COMPOSE_PROFILES:+1}
   LANGFUSE_PUBLIC_KEY: ${LANGFUSE_INIT_PROJECT_PUBLIC_KEY:?Set LANGFUSE_INIT_PROJECT_PUBLIC_KEY in .env}
   LANGFUSE_SECRET_KEY: ${LANGFUSE_INIT_PROJECT_SECRET_KEY:?Set LANGFUSE_INIT_PROJECT_SECRET_KEY in .env}
   LANGFUSE_BASE_URL: http://langfuse-web:3000
@@ -50,6 +53,62 @@ services:
       timeout: 3s
       retries: 5
       start_period: 25s
+    restart: unless-stopped
+
+  rbac-admin:
+    build:
+      context: ./rbac-admin
+    container_name: clinical-companion-rbac-admin
+    ports:
+      - "3002:80"
+    depends_on:
+      rbac:
+        condition: service_healthy
+    labels:
+      - dev.orbstack.http-port=80
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://127.0.0.1/",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  assistant-ui:
+    build:
+      context: ./assistant-ui
+    container_name: clinical-companion-assistant-ui
+    ports:
+      - "3003:80"
+    depends_on:
+      rbac:
+        condition: service_healthy
+      companion-graph:
+        condition: service_healthy
+    labels:
+      - dev.orbstack.http-port=80
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://127.0.0.1/",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
     restart: unless-stopped
 
   weaviate:
@@ -117,6 +176,7 @@ services:
         condition: service_healthy
       langfuse-web:
         condition: service_healthy
+        required: false
     healthcheck:
       test:
         [
@@ -131,6 +191,43 @@ services:
       start_period: 120s
     restart: unless-stopped
 
+  companion-graph:
+    build:
+      context: ./agent
+    container_name: clinical-companion-companion-graph
+    ports:
+      - "2024:2024"
+    environment: *agent-environment
+    volumes:
+      - companion-state:/data
+    command:
+      - /bin/sh
+      - -c
+      - mkdir -p /data/langgraph-api && ln -sfn /data/langgraph-api /app/.langgraph_api && exec langgraph dev --host 0.0.0.0 --port 2024 --no-browser
+    depends_on:
+      agent-index:
+        condition: service_completed_successfully
+      rbac:
+        condition: service_healthy
+      weaviate:
+        condition: service_healthy
+      langfuse-web:
+        condition: service_healthy
+        required: false
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:2024/ok')",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 8
+      start_period: 120s
+    restart: unless-stopped
+
   open-webui:
     image: ghcr.io/open-webui/open-webui:v0.11.4
     container_name: clinical-companion-ui
@@ -138,6 +235,9 @@ services:
       - "3000:8080"
     environment:
       OPENAI_API_BASE_URL: http://agent:8000/v1
+      # Default cache is 300s, so a recreated agent is dialed at its old IP
+      # and chat fails with "Server Connection Error" until the cache expires.
+      AIOHTTP_POOL_DNS_TTL: "0"
       ENABLE_OLLAMA_API: "false"
       ENABLE_OPENAI_API: "true"
       ENABLE_PERSISTENT_CONFIG: "false"
@@ -162,6 +262,7 @@ services:
   # Postgres, ClickHouse, Redis, and MinIO stay on the Compose network.
   # https://langfuse.com/self-hosting/deployment/docker-compose
   langfuse-worker:
+    profiles: [langfuse]
     image: docker.langfuse.com/langfuse/langfuse-worker:4
     container_name: clinical-companion-langfuse-worker
     restart: unless-stopped
@@ -206,6 +307,7 @@ services:
       LANGFUSE_BULLMQ_SKIP_REDIS_VERSION_CHECK: "false"
 
   langfuse-web:
+    profiles: [langfuse]
     image: docker.langfuse.com/langfuse/langfuse:4
     container_name: clinical-companion-langfuse
     restart: unless-stopped
@@ -222,9 +324,9 @@ services:
       NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:?Set LANGFUSE_NEXTAUTH_SECRET in .env}
       LANGFUSE_S3_MEDIA_UPLOAD_INTERNAL_ENDPOINT: http://minio:9000
       LANGFUSE_INIT_ORG_ID: ${LANGFUSE_INIT_ORG_ID:-clinical-companion}
-      LANGFUSE_INIT_ORG_NAME: ${LANGFUSE_INIT_ORG_NAME:-Clinical Companion}
+      LANGFUSE_INIT_ORG_NAME: ${LANGFUSE_INIT_ORG_NAME:-Wellnest}
       LANGFUSE_INIT_PROJECT_ID: ${LANGFUSE_INIT_PROJECT_ID:-clinical-companion}
-      LANGFUSE_INIT_PROJECT_NAME: ${LANGFUSE_INIT_PROJECT_NAME:-Clinical Companion}
+      LANGFUSE_INIT_PROJECT_NAME: ${LANGFUSE_INIT_PROJECT_NAME:-Wellnest}
       LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_INIT_PROJECT_PUBLIC_KEY:?Set LANGFUSE_INIT_PROJECT_PUBLIC_KEY in .env}
       LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_INIT_PROJECT_SECRET_KEY:?Set LANGFUSE_INIT_PROJECT_SECRET_KEY in .env}
       LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_INIT_USER_EMAIL:-admin@example.com}
@@ -247,6 +349,7 @@ services:
       start_interval: 5s
 
   clickhouse:
+    profiles: [langfuse]
     image: docker.io/clickhouse/clickhouse-server:25.12
     container_name: clinical-companion-langfuse-clickhouse
     restart: unless-stopped
@@ -266,6 +369,7 @@ services:
       start_period: 10s
 
   minio:
+    profiles: [langfuse]
     image: cgr.dev/chainguard/minio
     container_name: clinical-companion-langfuse-minio
     restart: unless-stopped
@@ -284,6 +388,7 @@ services:
       start_period: 5s
 
   redis:
+    profiles: [langfuse]
     image: docker.io/redis:7
     container_name: clinical-companion-langfuse-redis
     restart: unless-stopped
@@ -301,6 +406,7 @@ services:
       retries: 10
 
   postgres:
+    profiles: [langfuse]
     image: docker.io/postgres:17
     container_name: clinical-companion-langfuse-postgres
     restart: unless-stopped
@@ -327,3 +433,4 @@ volumes:
   langfuse_clickhouse_logs:
   langfuse_minio_data:
   langfuse_redis_data:
+  companion-state:

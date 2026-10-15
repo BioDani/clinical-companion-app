@@ -147,6 +147,11 @@ activemq-data/
 # SageMath parsed files
 *.sage.py
 
+# Node (rbac-admin)
+node_modules/
+coverage/
+.DS_Store
+
 # Environments
 .env
 .envrc
