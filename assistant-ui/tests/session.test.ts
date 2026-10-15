@@ -4,6 +4,7 @@ import {
   bindStore,
   clearSession,
   loadSession,
+  loadUsername,
   storedValues,
   type TokenStore,
 } from "../src/session";
@@ -60,6 +61,15 @@ describe("session", () => {
     expect(loadSession()?.role).toBe("admin");
     clearSession();
     expect(storedValues()).toEqual([]);
+  });
+
+  it("stores the username with a successful login and drops it on sign out", () => {
+    expect(acceptLogin(200, { access_token: token("user") }, " maria ")).not.toBeNull();
+    expect(loadUsername()).toBe("maria");
+    expect(acceptLogin(401, { access_token: token("user") }, "other")).toBeNull();
+    expect(loadUsername()).toBe("maria");
+    clearSession();
+    expect(loadUsername()).toBeNull();
   });
 
   it("never stores the password", () => {

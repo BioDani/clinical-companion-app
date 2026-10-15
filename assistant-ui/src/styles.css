@@ -123,13 +123,47 @@ button:disabled { opacity: 0.45; cursor: default; }
   gap: 8px;
 }
 
-.thread-trigger {
+.sidebar-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.who {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--sunken);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.thread-trigger,
+.new-chat {
   width: 100%;
   text-align: left;
   background: var(--sunken);
+  color: var(--text);
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 10px 12px;
+}
+
+.thread-item[data-active="true"] .thread-trigger,
+.new-chat[data-active="true"] {
+  background: var(--accent-fill);
+  color: white;
+  border-color: var(--accent-fill);
 }
 
 .pane {
@@ -179,9 +213,82 @@ button:disabled { opacity: 0.45; cursor: default; }
 .message-assistant {
   background: var(--bubble-assistant);
   border-color: var(--bubble-assistant-border);
+  white-space: normal;
+}
+
+.message-body {
+  display: grid;
+  gap: 8px;
+}
+
+.message-body p,
+.message-body ul,
+.sources,
+.sources-title {
+  margin: 0;
+}
+
+.message-body ul,
+.sources ul {
+  padding-left: 1.2rem;
+}
+
+.message-heading {
+  font-weight: 600;
 }
 
 .message a { color: var(--accent); }
+
+.sources {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--bubble-assistant-border);
+  display: grid;
+  gap: 6px;
+}
+
+.sources-title {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.message-time {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.message-pending {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+}
+
+.message-pending .message-time {
+  margin-top: 0;
+  margin-left: auto;
+}
+
+.pending-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+  animation: pending-pulse 1s ease-in-out infinite;
+}
+
+@keyframes pending-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pending-dot { animation: none; }
+}
 
 .composer { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: end; }
 

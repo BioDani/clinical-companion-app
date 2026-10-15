@@ -1,4 +1,5 @@
 const STORAGE_KEY = "assistant-ui-token";
+const USERNAME_KEY = "assistant-ui-username";
 
 export type Session = {
   token: string;
@@ -69,13 +70,23 @@ export function saveSession(token: string): Session | null {
 export function acceptLogin(
   status: number,
   body: { access_token?: string },
+  username = "",
 ): Session | null {
   if (status !== 200 || !body.access_token) return null;
-  return saveSession(body.access_token);
+  const session = saveSession(body.access_token);
+  const name = username.trim();
+  if (session && name) store.setItem(USERNAME_KEY, name);
+  return session;
+}
+
+export function loadUsername(): string | null {
+  const name = store.getItem(USERNAME_KEY)?.trim();
+  return name || null;
 }
 
 export function clearSession(): void {
   store.removeItem(STORAGE_KEY);
+  store.removeItem(USERNAME_KEY);
 }
 
 export function storedValues(): string[] {

@@ -30,7 +30,7 @@ export function SignIn({ onSignedIn }: Props) {
       return;
     }
     const body = (await response.json()) as { access_token?: string };
-    const session = acceptLogin(response.status, body);
+    const session = acceptLogin(response.status, body, username);
     setPassword("");
     if (!session) {
       setError(signInFailed);
