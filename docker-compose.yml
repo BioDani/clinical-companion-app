@@ -3,6 +3,9 @@ name: clinical-companion
 x-agent-environment: &agent-environment
   HF_TOKEN: ${HF_TOKEN:-}
   HF_MODEL: ${HF_MODEL:-Qwen/Qwen3-4B-Instruct-2507}
+  HF_TEMPERATURE: ${HF_TEMPERATURE:-0.7}
+  HF_TOP_P: ${HF_TOP_P:-0.8}
+  HF_TOP_K: ${HF_TOP_K:-20}
   HF_EMBEDDING_MODEL: ${HF_EMBEDDING_MODEL:-sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2}
   WEAVIATE_HOST: weaviate
   JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}

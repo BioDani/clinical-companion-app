@@ -8,6 +8,9 @@ os.environ["JWT_SECRET"] = "unit-test-jwt-secret-32-bytes-long"
 os.environ["JWT_ALGORITHM"] = "HS256"
 os.environ["HF_TOKEN"] = ""
 os.environ["HF_MODEL"] = ""
+os.environ["HF_TEMPERATURE"] = ""
+os.environ["HF_TOP_P"] = ""
+os.environ["HF_TOP_K"] = ""
 
 import pytest
 from fastapi.testclient import TestClient

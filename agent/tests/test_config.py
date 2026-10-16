@@ -7,8 +7,14 @@ import pytest
 from app.config import (
     AGENT_MODEL_ID,
     DEFAULT_HF_MODEL,
+    DEFAULT_HF_TEMPERATURE,
+    DEFAULT_HF_TOP_K,
+    DEFAULT_HF_TOP_P,
     hf_model,
+    hf_temperature,
     hf_token,
+    hf_top_k,
+    hf_top_p,
     jwt_algorithm,
     jwt_secret,
 )
@@ -43,6 +49,53 @@ def test_hf_model_uses_override(monkeypatch: pytest.MonkeyPatch):
 def test_hf_model_blank_falls_back_to_default(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("HF_MODEL", "   ")
     assert hf_model() == DEFAULT_HF_MODEL
+
+
+def test_sampling_defaults_when_unset(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("HF_TEMPERATURE", raising=False)
+    monkeypatch.delenv("HF_TOP_P", raising=False)
+    monkeypatch.delenv("HF_TOP_K", raising=False)
+    assert hf_temperature() == DEFAULT_HF_TEMPERATURE
+    assert hf_top_p() == DEFAULT_HF_TOP_P
+    assert hf_top_k() == DEFAULT_HF_TOP_K
+
+
+def test_sampling_uses_overrides(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("HF_TEMPERATURE", " 0.2 ")
+    monkeypatch.setenv("HF_TOP_P", " 0.95 ")
+    monkeypatch.setenv("HF_TOP_K", " 40 ")
+    assert hf_temperature() == 0.2
+    assert hf_top_p() == 0.95
+    assert hf_top_k() == 40
+
+
+def test_sampling_blank_falls_back_to_default(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("HF_TEMPERATURE", "  ")
+    monkeypatch.setenv("HF_TOP_P", "")
+    monkeypatch.setenv("HF_TOP_K", "   ")
+    assert hf_temperature() == DEFAULT_HF_TEMPERATURE
+    assert hf_top_p() == DEFAULT_HF_TOP_P
+    assert hf_top_k() == DEFAULT_HF_TOP_K
+
+
+@pytest.mark.parametrize(
+    ("name", "raw", "reader"),
+    [
+        ("HF_TEMPERATURE", "hot", hf_temperature),
+        ("HF_TEMPERATURE", "2.1", hf_temperature),
+        ("HF_TEMPERATURE", "-0.1", hf_temperature),
+        ("HF_TOP_P", "wide", hf_top_p),
+        ("HF_TOP_P", "0", hf_top_p),
+        ("HF_TOP_P", "1.1", hf_top_p),
+        ("HF_TOP_K", "many", hf_top_k),
+        ("HF_TOP_K", "0", hf_top_k),
+        ("HF_TOP_K", "1.5", hf_top_k),
+    ],
+)
+def test_sampling_rejects_out_of_range(monkeypatch: pytest.MonkeyPatch, name, raw, reader):
+    monkeypatch.setenv(name, raw)
+    with pytest.raises(ValueError, match=name):
+        reader()
 
 
 def test_jwt_secret_returns_stripped_value(monkeypatch: pytest.MonkeyPatch):

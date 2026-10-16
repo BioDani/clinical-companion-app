@@ -109,6 +109,17 @@ def test_turn_replies_omits_a_leading_route_label():
     assert turn_replies(messages) == "BMI 25.9 (overweight)\n\na quote"
 
 
+def test_turn_replies_omits_retrieval_traces():
+    messages = [
+        HumanMessage(content="q"),
+        AIMessage(content="NONE"),
+        AIMessage(content="RELEVANT 3"),
+        AIMessage(content="GROUNDED"),
+        AIMessage(content="Walk most days."),
+    ]
+    assert turn_replies(messages) == "Walk most days."
+
+
 def test_turn_replies_replaces_a_lone_end_label():
     assert turn_replies([HumanMessage(content="q"), AIMessage(content="END")]) == RETRY_REPLY
 

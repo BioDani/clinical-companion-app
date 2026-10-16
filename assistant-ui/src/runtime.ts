@@ -47,12 +47,17 @@ const INTERNAL_LABELS = new Set([
   "OUT_OF_SCOPE",
   "SAFE",
   "UNSAFE",
+  "NONE",
+  "GROUNDED",
+  "UNGROUNDED",
 ]);
+
+const RELEVANCE_LABEL = /^RELEVANT(?:\s+\d+)*$/;
 
 export function isVisibleTranscriptMessage(message: LangChainMessage): boolean {
   if (message.type !== "human" && message.type !== "ai") return false;
   const text = messageText(message).trim();
-  if (INTERNAL_LABELS.has(text)) return false;
+  if (INTERNAL_LABELS.has(text) || RELEVANCE_LABEL.test(text)) return false;
   if (text.startsWith(EVIDENCE_PREFIX)) return false;
   return true;
 }
@@ -60,6 +65,23 @@ export function isVisibleTranscriptMessage(message: LangChainMessage): boolean {
 function visibleStreamData(data: unknown): unknown {
   if (!Array.isArray(data)) return data;
   return data.filter((message) => isVisibleTranscriptMessage(message as LangChainMessage));
+}
+
+/** Messages a node returned after the model draft, such as the citation footer. */
+export function messagesFromUpdates(data: unknown): LangChainMessage[] {
+  if (!data || typeof data !== "object") return [];
+  const found: LangChainMessage[] = [];
+  for (const update of Object.values(data as Record<string, unknown>)) {
+    if (!update || typeof update !== "object") continue;
+    const messages = (update as { messages?: unknown }).messages;
+    if (!Array.isArray(messages)) continue;
+    for (const message of messages) {
+      if (isVisibleTranscriptMessage(message as LangChainMessage)) {
+        found.push(message as LangChainMessage);
+      }
+    }
+  }
+  return found;
 }
 
 function statusOf(error: unknown): number | undefined {
@@ -102,7 +124,7 @@ export function createLangGraphStream(onUnauthorized: () => void) {
     try {
       const generator = client.runs.stream(externalId, ASSISTANT_ID, {
         input: { messages },
-        streamMode: "messages",
+        streamMode: ["messages", "updates"],
         signal: config.abortSignal,
         metadata: {
           langfuse_session_id: externalId,
@@ -115,6 +137,17 @@ export function createLangGraphStream(onUnauthorized: () => void) {
           const data = visibleStreamData(chunk.data);
           if (Array.isArray(data) && data.length === 0) continue;
           yield { event: chunk.event, data };
+          continue;
+        }
+        if (chunk.event === "updates") {
+          const cited = messagesFromUpdates(chunk.data);
+          if (cited.length > 0) {
+            yield { event: "messages/complete", data: cited };
+          }
+          const data = chunk.data as { __interrupt__?: unknown } | null;
+          if (data && typeof data === "object" && "__interrupt__" in data) {
+            yield { event: chunk.event, data: chunk.data };
+          }
           continue;
         }
         yield { event: chunk.event, data: chunk.data };

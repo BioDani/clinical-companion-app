@@ -49,7 +49,7 @@ On OrbStack, Compose domains are `https://<service>.clinical-companion.orb.local
 
 Login is **username + password** (`ADMIN_USERNAME` / `ADMIN_PASSWORD` in `.env`), not email. In `/docs`, call `POST /auth/login`, then **Authorize** with `Bearer <access_token>`.
 
-Optional: set `HF_MODEL` in `.env` (default `Qwen/Qwen3-4B-Instruct-2507`).
+Optional: set `HF_MODEL` in `.env` (default `Qwen/Qwen3-4B-Instruct-2507`). Sampling defaults are `HF_TEMPERATURE=0.7`, `HF_TOP_P=0.8`, and `HF_TOP_K=20`.
 
 Open WebUI logs in to rbac once at start and uses that JWT as `OPENAI_API_KEY`. Default token lifetime in Compose is 24 hours (`ACCESS_TOKEN_EXPIRE_MINUTES`). Restart `open-webui` to mint a new one.
 
@@ -96,7 +96,7 @@ agent/
     main.py               # FastAPI app, include_router
     auth.py               # verify rbac JWT
     dependencies.py       # session id, graph invoke
-    config.py             # HF_TOKEN, HF_MODEL, JWT_SECRET
+    config.py             # HF_TOKEN, HF_MODEL, sampling, JWT_SECRET
     routers/
       health.py           # GET /health
       openai.py           # /v1/models, /v1/chat/completions

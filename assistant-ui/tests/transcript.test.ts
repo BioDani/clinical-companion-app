@@ -3,7 +3,7 @@ import type { LangChainMessage } from "@assistant-ui/react-langgraph";
 import { linkParts } from "../src/links";
 import { parseMarkdown, splitAnswer } from "../src/markdown";
 import { formatMessageTime, rememberMessageTime, rememberedMessageTime, bindMessageTimeStore } from "../src/messageTime";
-import { isVisibleTranscriptMessage } from "../src/runtime";
+import { isVisibleTranscriptMessage, messagesFromUpdates } from "../src/runtime";
 import type { TokenStore } from "../src/session";
 
 function human(content: string): LangChainMessage {
@@ -15,6 +15,21 @@ function ai(content: string): LangChainMessage {
 }
 
 describe("transcript", () => {
+  it("turns a citation update into the finished assistant message", () => {
+    const finished = messagesFromUpdates({
+      "CitationMiddleware.after_agent": {
+        messages: [
+          human("Use only the evidence below. Knowledge passages follow."),
+          ai("Walk daily.\n\n### Reference\n\n- DGA.pdf, page 12"),
+        ],
+      },
+    });
+    expect(finished).toEqual([
+      ai("Walk daily.\n\n### Reference\n\n- DGA.pdf, page 12"),
+    ]);
+    expect(messagesFromUpdates(null)).toEqual([]);
+  });
+
   it("hides the evidence note and internal labels", () => {
     expect(
       isVisibleTranscriptMessage(
@@ -23,6 +38,10 @@ describe("transcript", () => {
     ).toBe(false);
     expect(isVisibleTranscriptMessage(ai("GREETING"))).toBe(false);
     expect(isVisibleTranscriptMessage(ai("SAFE"))).toBe(false);
+    expect(isVisibleTranscriptMessage(ai("NONE"))).toBe(false);
+    expect(isVisibleTranscriptMessage(ai("RELEVANT 3"))).toBe(false);
+    expect(isVisibleTranscriptMessage(ai("GROUNDED"))).toBe(false);
+    expect(isVisibleTranscriptMessage(ai("UNGROUNDED"))).toBe(false);
     expect(isVisibleTranscriptMessage(human("Hello"))).toBe(true);
     expect(isVisibleTranscriptMessage(ai("A short answer."))).toBe(true);
   });
