@@ -243,34 +243,40 @@ def _withholds_citations(text: str) -> bool:
 
 
 class CitationMiddleware(AgentMiddleware):
-    """Append the stored book and web citations to the final answer."""
+    """Append the stored book and web citations to the final answer.
 
-    def _attach(self, state: CompanionState) -> None:
+    The cited answer is returned as a state update with the same message id,
+    so the checkpoint replaces the streamed answer instead of relying on an
+    in-place change to the message object.
+    """
+
+    def _cited(self, state: CompanionState) -> AIMessage | None:
         citations = str(state.get("citations") or "").strip()
-        if not citations:
-            return
         messages = state.get("messages") or []
-        if not messages:
-            return
+        if not citations or not messages:
+            return None
         last_message = messages[-1]
         if not isinstance(last_message, AIMessage):
-            return
+            return None
         content = last_message.content if isinstance(last_message.content, str) else ""
         body = _strip_general_knowledge(content)
         if _withholds_citations(body) or citations in body:
-            last_message.content = body
-            return
-        last_message.content = f"{body}\n\n{citations}"
+            text = body
+        else:
+            text = f"{body}\n\n{citations}"
+        if text == content:
+            return None
+        return last_message.model_copy(update={"content": text})
 
     def after_agent(self, state: CompanionState, runtime: Runtime) -> dict[str, Any] | None:
-        self._attach(state)
-        return None
+        del runtime
+        cited = self._cited(state)
+        return {"messages": [cited]} if cited is not None else None
 
     async def aafter_agent(
         self, state: CompanionState, runtime: Runtime
     ) -> dict[str, Any] | None:
-        self._attach(state)
-        return None
+        return self.after_agent(state, runtime)
 
 
 def _middleware(chat, *, with_memory: bool) -> list:

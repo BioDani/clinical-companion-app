@@ -119,11 +119,36 @@ export function createLangGraphStream(onUnauthorized: () => void) {
         }
         yield { event: chunk.event, data: chunk.data };
       }
+      // Token streaming only carries what the model wrote. The agent adds the
+      // "### Reference" / "### Sources" block after the model finishes, under
+      // the same message id, so read the saved answer and replace it.
+      if (!config.abortSignal.aborted) {
+        const finished = await finalAnswer(client, externalId);
+        if (finished.length > 0) yield { event: "messages/complete", data: finished };
+      }
     } catch (error) {
       if (statusOf(error) === 401) onUnauthorized();
       throw error;
     }
   };
+}
+
+async function finalAnswer(
+  client: ReturnType<typeof createClient>,
+  threadId: string,
+): Promise<LangChainMessage[]> {
+  try {
+    const state = await client.threads.getState<{ messages?: LangChainMessage[] }>(threadId);
+    const messages = state.values.messages ?? [];
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (message.type === "human") break;
+      if (message.type === "ai" && isVisibleTranscriptMessage(message)) return [message];
+    }
+  } catch {
+    // Keep the streamed answer if the saved state cannot be read.
+  }
+  return [];
 }
 
 function threadListAdapter(onUnauthorized: () => void): RemoteThreadListAdapter {
