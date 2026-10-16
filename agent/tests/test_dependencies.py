@@ -109,6 +109,17 @@ def test_turn_replies_omits_a_leading_route_label():
     assert turn_replies(messages) == "BMI 25.9 (overweight)\n\na quote"
 
 
+def test_turn_replies_omits_retrieval_traces():
+    messages = [
+        HumanMessage(content="q"),
+        AIMessage(content="NONE"),
+        AIMessage(content="RELEVANT 3"),
+        AIMessage(content="GROUNDED"),
+        AIMessage(content="Walk most days."),
+    ]
+    assert turn_replies(messages) == "Walk most days."
+
+
 def test_turn_replies_replaces_a_lone_end_label():
     assert turn_replies([HumanMessage(content="q"), AIMessage(content="END")]) == RETRY_REPLY
 
@@ -177,8 +188,21 @@ def test_langfuse_stays_off_during_pytest_even_with_keys(monkeypatch: pytest.Mon
     assert langfuse_enabled() is False
 
 
+def test_langfuse_enabled_can_be_turned_off(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-lf-test")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-lf-test")
+    monkeypatch.setenv("LANGFUSE_ENABLED", "")
+    assert langfuse_enabled() is False
+    monkeypatch.setenv("LANGFUSE_ENABLED", "0")
+    assert langfuse_enabled() is False
+    monkeypatch.setenv("LANGFUSE_ENABLED", "1")
+    assert langfuse_enabled() is True
+
+
 def test_langfuse_enabled_needs_both_keys_outside_pytest(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delenv("LANGFUSE_ENABLED", raising=False)
     monkeypatch.delenv("LANGFUSE_PUBLIC_KEY", raising=False)
     monkeypatch.delenv("LANGFUSE_SECRET_KEY", raising=False)
     assert langfuse_enabled() is False

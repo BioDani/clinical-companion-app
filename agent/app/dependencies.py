@@ -68,7 +68,16 @@ _HIDDEN_LABELS = {
     "BMI",
     "KNOWLEDGE",
     "SAFE",
+    "UNSAFE",
+    "GREETING",
+    "IN_SCOPE",
+    "OUT_OF_SCOPE",
+    "NONE",
+    "GROUNDED",
+    "UNGROUNDED",
 }
+
+_TRACE_LABEL = re.compile(r"^RELEVANT(?:\s+\d+)*$")
 
 _ERROR_LEAK = re.compile(r"^\s*_?[A-Za-z]+,\s*error\b", re.IGNORECASE)
 
@@ -76,7 +85,7 @@ _ERROR_LEAK = re.compile(r"^\s*_?[A-Za-z]+,\s*error\b", re.IGNORECASE)
 def _is_hidden_reply(text: str) -> bool:
     """Route labels and model error dumps are not answers."""
     token = text.strip()
-    if token in _HIDDEN_LABELS:
+    if token in _HIDDEN_LABELS or _TRACE_LABEL.match(token):
         return True
     return _ERROR_LEAK.match(token) is not None
 

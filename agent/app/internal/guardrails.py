@@ -7,8 +7,10 @@ after-agent safety check.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
+import uuid
 from typing import Any
 
 from langchain.agents.middleware import (
@@ -24,6 +26,20 @@ from langgraph.types import Command
 
 from .bmi import BmiTool
 from .web_search import format_search_results, format_source_links
+
+# Scope, relevance, rewrite, grounding, and safety calls are not the reply.
+QUIET = {"tags": ["nostream"]}
+
+
+def publish_message(message: AIMessage) -> dict[str, Any]:
+    """Return a same-id copy so a streamed draft can be replaced.
+
+    The chat stream only carries model tokens. A later edit of that message
+    stays invisible unless this copy is returned from the node.
+    """
+    if not message.id:
+        message.id = str(uuid.uuid4())
+    return {"messages": [message.model_copy(deep=True)]}
 
 REFUSAL = (
     "I can't help with diagnosis or treatment plans. "
@@ -43,8 +59,8 @@ NO_WEB_SOURCES = "No usable web sources were found for this question."
 TAVILY_PAYLOAD = "TAVILY_JSON\n"
 
 INTRODUCTION = (
-    "Hello! I'm Clinical Companion, your assistant for diet, exercise, "
-    "and healthy habits. How can I help?"
+    "Hello! I'm Wellnest. Your everyday wellness companion. "
+    "I can help with diet, exercise, and healthy habits. How can I help?"
 )
 
 OUT_OF_SCOPE = (
@@ -107,8 +123,8 @@ _SENTENCE = re.compile(r"(?<=[.!?])\s+")
 _PHONE = r"(?:\+?\d{1,3}[\s.-]?)?(?:\(\d{3}\)[\s.-]?|\d{3}[\s.-])\d{3}[\s.-]\d{4}|\b\d{10}\b"
 
 SAFETY_PROMPT = (
-    "Evaluate if this response is safe and appropriate for Clinical Companion. "
-    "Clinical Companion may discuss sleep, movement, and eating patterns. "
+    "Evaluate if this response is safe and appropriate for Wellnest. "
+    "Wellnest may discuss sleep, movement, and eating patterns. "
     "Respond with only SAFE or UNSAFE. "
     "UNSAFE means the response diagnoses, prescribes, names a medication, "
     "states a dose, or gives a treatment regimen. "
@@ -309,31 +325,34 @@ class SafetyGuardrailMiddleware(AgentMiddleware):
         super().__init__()
         self.model = model
 
-    def _review(self, state: AgentState) -> None:
+    def _review(self, state: AgentState) -> dict[str, Any] | None:
         messages = state.get("messages") or []
         if not messages:
-            return
+            return None
         last_message = messages[-1]
         if not isinstance(last_message, AIMessage):
-            return
+            return None
         content = _text(last_message.content).strip()
         if not content or _skip_safety(content):
-            return
+            return None
         result = self.model.invoke(
-            [{"role": "user", "content": SAFETY_PROMPT.format(content=content)}]
+            [{"role": "user", "content": SAFETY_PROMPT.format(content=content)}],
+            config=QUIET,
         )
         verdict = _text(getattr(result, "content", result))
-        if "UNSAFE" in verdict:
-            last_message.content = HABIT_BOUNDARY
+        if "UNSAFE" not in verdict:
+            return None
+        last_message.content = HABIT_BOUNDARY
+        return publish_message(last_message)
 
     @hook_config(can_jump_to=["end"])
     def after_agent(self, state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
-        self._review(state)
-        return None
+        del runtime
+        return self._review(state)
 
     @hook_config(can_jump_to=["end"])
     async def aafter_agent(
         self, state: AgentState, runtime: Runtime
     ) -> dict[str, Any] | None:
-        self._review(state)
-        return None
+        del runtime
+        return await asyncio.to_thread(self._review, state)

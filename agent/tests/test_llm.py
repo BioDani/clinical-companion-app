@@ -49,9 +49,36 @@ def test_generate_uses_the_huggingface_router(monkeypatch: pytest.MonkeyPatch):
     assert captured["kwargs"]["base_url"] == HF_OPENAI_BASE
     assert captured["kwargs"]["api_key"] == "hf_test"
     assert captured["kwargs"]["model"] == "Qwen/Qwen3-4B-Instruct-2507"
-    assert captured["kwargs"]["temperature"] == 0
+    assert captured["kwargs"]["temperature"] == 0.7
+    assert captured["kwargs"]["top_p"] == 0.8
+    assert captured["kwargs"]["extra_body"] == {"top_k": 20}
     assert result.generations[0].message.content == "ok"
     assert captured["messages"][0].content == "hi"
+
+
+def test_generate_forwards_sampling_overrides(monkeypatch: pytest.MonkeyPatch):
+    captured: dict = {}
+
+    class FakeClient:
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+            return ChatResult(
+                generations=[ChatGeneration(message=AIMessage(content="ok"))]
+            )
+
+    def fake_openai(**kwargs):
+        captured["kwargs"] = kwargs
+        return FakeClient()
+
+    monkeypatch.setenv("HF_TOKEN", "hf_test")
+    monkeypatch.setenv("HF_TEMPERATURE", "0.2")
+    monkeypatch.setenv("HF_TOP_P", "0.95")
+    monkeypatch.setenv("HF_TOP_K", "40")
+    monkeypatch.setattr("app.internal.llm.ChatOpenAI", fake_openai)
+    HuggingFaceChat()._generate([HumanMessage(content="hi")])
+
+    assert captured["kwargs"]["temperature"] == 0.2
+    assert captured["kwargs"]["top_p"] == 0.95
+    assert captured["kwargs"]["extra_body"] == {"top_k": 40}
 
 
 def test_bind_tools_delegates_to_the_router_client(monkeypatch: pytest.MonkeyPatch):
