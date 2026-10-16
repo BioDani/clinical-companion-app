@@ -52,15 +52,18 @@ SCOPE_PROMPT = (
     "Classify the user message for Wellnest. "
     "Reply with only one of these labels: GREETING, IN_SCOPE, OUT_OF_SCOPE. "
     "GREETING is a hello, thanks, or a short social opener with no health question. "
-    "IN_SCOPE is diet, exercise, sleep, nutrition, healthy habits, wellbeing, "
-    "or a general question about an illness, a symptom, or a health condition. "
+    "IN_SCOPE is diet and nutrition, exercise and movement, sleep, healthy habits, "
+    "the body including anatomy, muscles, and organs, "
+    "or what an illness, a symptom, or a health condition is. "
     "OUT_OF_SCOPE is a question that is not about health, including the assistant's "
     "training, dates, coding, news, or trivia. "
     "Examples: "
     "hello -> GREETING. "
     "What is a good breakfast? -> IN_SCOPE. "
+    "What are the leg muscles? -> IN_SCOPE. "
     "What is a cold? -> IN_SCOPE. "
     "What is the flu? -> IN_SCOPE. "
+    "What is alzheimer? -> IN_SCOPE. "
     "How do I sleep better? -> IN_SCOPE. "
     "Write a python script -> OUT_OF_SCOPE. "
     "What model are you? -> OUT_OF_SCOPE."
@@ -104,7 +107,8 @@ _CONDITION = re.compile(
 _HEALTH_TERM = re.compile(
     r"\b(?:colds?|flu|influenza|alzheimer(?:'s|s)?|dementia|fevers?|coughs?|"
     r"diabetes|asthma|cancers?|infections?|diseases?|illness(?:es)?|symptoms?|"
-    r"viruses?|nutrition|diets?|exercise|sleep|foods?|meals?|weight|bmi)\b",
+    r"viruses?|nutrition|diets?|exercise|sleep|foods?|meals?|weight|bmi|"
+    r"muscles?|organs?|bones?|joints?|anatomy|hearts?|lungs?|brains?)\b",
     re.IGNORECASE,
 )
 _REFERENCE_MARK = re.compile(
@@ -273,16 +277,48 @@ def _citation_block(
     return "\n\n".join(parts)
 
 
-def _evidence_message(book: str, web_text: str) -> str:
+def _stands_alone(question: str) -> bool:
+    """A question that names its subject is not a follow-up to the previous turn."""
+    return bool(_DEFINITION.match(question or "")) or bool(condition_terms(question))
+
+
+def _keeps_condition(question: str, rewritten: str) -> bool:
+    terms = condition_terms(question)
+    if not terms:
+        return True
+    return all(_mentions_term(rewritten, term) for term in terms)
+
+
+def _evidence_message(book: str, web_text: str, question: str = "") -> str:
     parts = [
         "Use only the evidence below. Do not add facts from memory. "
-        "Do not say this is general knowledge."
+        "Do not say this is general knowledge. "
+        "Answer this question only, not an earlier question."
     ]
+    if question.strip():
+        parts.append(f"Question:\n{question.strip()}")
+    if book.strip() and web_text.strip():
+        parts.append(
+            "Use the knowledge passages as the base. "
+            "Add a fact from the web evidence only when the passages do not already state it."
+        )
     if book.strip():
         parts.append(f"Knowledge passages:\n{book.strip()}")
     if web_text.strip():
         parts.append(f"Web evidence:\n{web_text.strip()}")
     return "\n\n".join(parts)
+
+
+def _web_evidence(search_text: str) -> tuple[list[dict], str]:
+    from .web_search import search_web
+
+    web_results = kept_tavily_results(
+        search_web(search_text, include_domains=list(HEALTH_DOMAINS))
+    )
+    web_text = guard_tavily_results(web_results)
+    if web_text == NO_WEB_SOURCES:
+        return [], ""
+    return web_results, web_text
 
 
 def _end(reply: str) -> dict[str, Any]:
@@ -325,58 +361,54 @@ class EvidenceMiddleware(AgentMiddleware):
         )
         return [hits[index - 1] for index in _relevant_indexes(verdict, len(hits))]
 
-    def _rewrite(self, state: CompanionState) -> str:
+    def _rewrite(self, state: CompanionState, question: str) -> str:
         lines: list[str] = []
-        for message in state.get("messages") or []:
-            text = _message_text(message).strip()
-            if not text or text.startswith("Use only the evidence below."):
-                continue
-            kind = getattr(message, "type", "")
-            if kind == "system":
-                continue
-            speaker = "User" if kind == "human" else "Companion"
-            lines.append(f"{speaker}: {text}")
+        if _stands_alone(question):
+            lines.append(f"User: {question}")
+        else:
+            for message in state.get("messages") or []:
+                text = _message_text(message).strip()
+                if not text or text.startswith("Use only the evidence below."):
+                    continue
+                kind = getattr(message, "type", "")
+                if kind == "system":
+                    continue
+                speaker = "User" if kind == "human" else "Companion"
+                lines.append(f"{speaker}: {text}")
         if not lines:
             return ""
-        return self._label(REWRITE_PROMPT, "\n".join(lines)).strip()
+        rewritten = self._label(REWRITE_PROMPT, "\n".join(lines)).strip()
+        if not _keeps_condition(question, rewritten):
+            return ""
+        return rewritten
 
     def _prepare(self, state: CompanionState) -> dict[str, Any] | None:
         question = latest_human(state)
         label = _scope_label(self._label(SCOPE_PROMPT, question))
         if label == "GREETING":
             return _end(INTRODUCTION)
-        if label == "OUT_OF_SCOPE":
+        if label == "OUT_OF_SCOPE" and not _health_question(question):
             return _end(OUT_OF_SCOPE)
 
         from .vector_store import search_hits
 
+        terms = condition_terms(question)
         hits = search_hits(question)
-        kept = self._keep(question, hits)
+        kept = self._keep(question, hits, terms)
         search_text = question
         if not kept:
-            rewritten = self._rewrite(state)
+            rewritten = self._rewrite(state, question)
             if rewritten:
                 search_text = rewritten
                 hits = search_hits(rewritten)
-                kept = self._keep(rewritten, hits)
-        web_results: list[dict] = []
-        web_text = ""
-        if not kept:
-            from .web_search import search_web
-
-            web_results = kept_tavily_results(
-                search_web(search_text, include_domains=list(HEALTH_DOMAINS))
-            )
-            web_text = guard_tavily_results(web_results)
-            if web_text == NO_WEB_SOURCES:
-                web_text = ""
-                web_results = []
+                kept = self._keep(rewritten, hits, terms)
+        web_results, web_text = _web_evidence(search_text)
         if not kept and not web_results:
             return _end(NOT_COVERED)
         book = _book_text(kept)
         return {
             "citations": _citation_block(book, web_results, kept if book else None),
-            "messages": [HumanMessage(content=_evidence_message(book, web_text))],
+            "messages": [HumanMessage(content=_evidence_message(book, web_text, question))],
         }
 
     @hook_config(can_jump_to=["end"])

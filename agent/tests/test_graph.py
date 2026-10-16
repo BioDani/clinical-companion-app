@@ -83,6 +83,10 @@ def _fail_web(query: str, include_domains: list[str] | None = None) -> list[dict
     raise AssertionError("web should not be searched")
 
 
+def _empty_web(query: str, include_domains: list[str] | None = None) -> list[dict]:
+    return []
+
+
 def _block_search(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("app.internal.vector_store.search_hits", _fail_book)
     monkeypatch.setattr("app.internal.web_search.search_web", _fail_web)
@@ -123,7 +127,7 @@ def test_dose_question_is_refused_without_search_or_citations(
 
 
 def test_model_refusal_drops_retrieved_citations(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr("app.internal.web_search.search_web", _fail_web)
+    monkeypatch.setattr("app.internal.web_search.search_web", _empty_web)
     monkeypatch.setattr(
         "app.internal.vector_store.search_hits",
         lambda query: [
@@ -226,8 +230,10 @@ def test_scope_label_uses_the_final_label():
 
 
 def test_scope_prompt_keeps_a_common_illness_in_scope():
+    assert "What are the leg muscles? -> IN_SCOPE" in SCOPE_PROMPT
     assert "What is a cold? -> IN_SCOPE" in SCOPE_PROMPT
     assert "What is the flu? -> IN_SCOPE" in SCOPE_PROMPT
+    assert "What is alzheimer? -> IN_SCOPE" in SCOPE_PROMPT
 
 
 def test_common_illness_question_is_searched(monkeypatch: pytest.MonkeyPatch):
@@ -275,7 +281,7 @@ def test_greeting_returns_the_introduction(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_two_knowledge_sources_are_cited(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr("app.internal.web_search.search_web", _fail_web)
+    monkeypatch.setattr("app.internal.web_search.search_web", _empty_web)
     monkeypatch.setattr(
         "app.internal.vector_store.search_hits",
         lambda query: [
@@ -325,12 +331,26 @@ def test_two_knowledge_sources_are_cited(monkeypatch: pytest.MonkeyPatch):
     assert str(cited[0].content).count("Vegetables and fruit help.") == 1
 
 
-def test_explained_book_does_not_call_tavily(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr("app.internal.web_search.search_web", _fail_web)
+def test_kept_book_page_is_complemented_by_the_web(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
         "app.internal.vector_store.search_hits",
         lambda query: [
-            Passage(text="page 4: what a good diet includes vegetables", distance=0.2)
+            Passage(
+                text="DGA.pdf, page 4: what a good diet includes vegetables",
+                distance=0.2,
+                source="DGA.pdf",
+                page=4,
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        "app.internal.web_search.search_web",
+        lambda query, include_domains=None: [
+            {
+                "title": "Vegetables",
+                "url": "https://www.cdc.gov/nutrition/vegetables",
+                "content": "Vegetables are part of a meal.",
+            }
         ],
     )
     model = ScriptedChat(
@@ -352,9 +372,18 @@ def test_explained_book_does_not_call_tavily(monkeypatch: pytest.MonkeyPatch):
     answer = result["messages"][-1].content
 
     assert "Vegetables help." in answer
-    assert "page 4" in answer
     assert "### Reference" in answer
+    assert "page 4" in answer
+    assert "### Sources" in answer
+    assert "https://www.cdc.gov/nutrition/vegetables" in answer
     assert "general knowledge" not in answer.lower()
+    assert ["nostream" in tags for tags in model.configs] == [
+        True,
+        True,
+        False,
+        True,
+        True,
+    ]
 
 
 def test_missing_book_calls_tavily_and_keeps_the_link(
@@ -400,33 +429,157 @@ def test_missing_book_calls_tavily_and_keeps_the_link(
     assert "https://evil.example/dose" not in _seen(model)
 
 
-def test_relevant_page_does_not_call_tavily(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr("app.internal.web_search.search_web", _fail_web)
+def test_leg_muscles_stay_in_scope_when_the_model_says_out(monkeypatch: pytest.MonkeyPatch):
+    seen: list[str] = []
+
+    def search_hits(query: str) -> list[Passage]:
+        seen.append(query)
+        return []
+
+    monkeypatch.setattr("app.internal.vector_store.search_hits", search_hits)
+    monkeypatch.setattr("app.internal.web_search.search_web", _empty_web)
+    model = ScriptedChat(
+        replies=[
+            AIMessage(content="OUT_OF_SCOPE"),
+            AIMessage(content="leg muscles"),
+        ]
+    )
+    result = _invoke(model, "What are the leg muscles?")
+
+    assert seen
+    assert result["messages"][-1].content == NOT_COVERED
+
+
+def test_flu_passage_that_does_not_name_flu_is_not_cited(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
         "app.internal.vector_store.search_hits",
-        lambda query: [Passage(text="page 8: morning meal routines", distance=0.9)],
+        lambda query: [
+            Passage(
+                text=(
+                    "y5686e.pdf, page 38: a respiratory infection is part of normal life "
+                    "for many children"
+                ),
+                distance=0.2,
+                source="y5686e.pdf",
+                page=38,
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        "app.internal.web_search.search_web",
+        lambda query, include_domains=None: [
+            {
+                "title": "Flu",
+                "url": "https://www.cdc.gov/flu/about/index.html",
+                "content": "Flu is a respiratory illness caused by influenza viruses.",
+            }
+        ],
     )
     model = ScriptedChat(
         replies=[
             AIMessage(content="IN_SCOPE"),
-            AIMessage(content="RELEVANT 1"),
-            AIMessage(content="Eat breakfast."),
+            AIMessage(content="influenza"),
+            AIMessage(content="Flu is a respiratory illness caused by influenza viruses."),
             AIMessage(content="GROUNDED"),
             AIMessage(content="SAFE"),
         ]
     )
-    result = _invoke(model, "What is a good breakfast?")
+    result = _invoke(model, "what is a flu?")
     answer = result["messages"][-1].content
 
-    assert "page 8" in answer
-    assert "https://www.cdc.gov/breakfast" not in answer
-    assert [ "nostream" in tags for tags in model.configs ] == [
-        True,
-        True,
-        False,
-        True,
-        True,
-    ]
+    assert "page 38" not in answer
+    assert "### Reference" not in answer
+    assert "https://www.cdc.gov/flu/about/index.html" in answer
+
+
+def test_new_question_does_not_reuse_the_previous_topic(monkeypatch: pytest.MonkeyPatch):
+    web_queries: list[str] = []
+
+    def search_web(query: str, include_domains: list[str] | None = None) -> list[dict]:
+        web_queries.append(query)
+        if "flu" in query.lower():
+            return [
+                {
+                    "title": "Flu",
+                    "url": "https://www.cdc.gov/flu/about/index.html",
+                    "content": "Flu is a respiratory illness caused by influenza viruses.",
+                }
+            ]
+        return [
+            {
+                "title": "Bones",
+                "url": "https://medlineplus.gov/bones",
+                "content": "Adults have 206 bones.",
+            }
+        ]
+
+    monkeypatch.setattr("app.internal.vector_store.search_hits", lambda query: [])
+    monkeypatch.setattr("app.internal.web_search.search_web", search_web)
+    model = ScriptedChat(
+        replies=[
+            AIMessage(content="IN_SCOPE"),
+            AIMessage(content="human skeleton bones"),
+            AIMessage(content="Flu is a respiratory illness caused by influenza viruses."),
+            AIMessage(content="GROUNDED"),
+            AIMessage(content="SAFE"),
+        ]
+    )
+    result = build_companion(model).invoke(
+        {
+            "messages": [
+                HumanMessage(content="How many bones are in the body?"),
+                AIMessage(
+                    content=(
+                        "Adults have 206 bones.\n\n### Sources\n\n"
+                        "- [Bones](https://medlineplus.gov/bones)"
+                    )
+                ),
+                HumanMessage(content="What is a flu?"),
+            ]
+        },
+        _config(),
+    )
+    answer = result["messages"][-1].content
+    rewrite = "\n".join(str(message.content) for message in model.calls[1])
+
+    assert "flu" in rewrite.lower()
+    assert "206" not in rewrite
+    assert web_queries == ["What is a flu?"]
+    assert "https://www.cdc.gov/flu/about/index.html" in answer
+    assert "medlineplus.gov/bones" not in answer
+    assert "206" not in answer
+
+
+def test_alzheimer_bibliography_is_not_the_book_answer(monkeypatch: pytest.MonkeyPatch):
+    bibliography = (
+        "Alzheimer's Dement. 2022 doi:10.1002/alz.12417. "
+        "Pourhadi et al. Dementia doi:10.1001/jama.2023.23784. "
+        "Shao et al. Hormone therapy doi:10.1212/WNL accessed 1 January."
+    )
+    monkeypatch.setattr(
+        "app.internal.vector_store.search_hits",
+        lambda query: [
+            Passage(
+                text=bibliography,
+                distance=0.2,
+                source="9789240123557-eng.pdf",
+                page=138,
+            )
+        ],
+    )
+    monkeypatch.setattr("app.internal.web_search.search_web", _empty_web)
+    model = ScriptedChat(
+        replies=[
+            AIMessage(content="IN_SCOPE"),
+            AIMessage(content="Alzheimer disease"),
+        ]
+    )
+    result = _invoke(model, "What is alzheimer?")
+    answer = result["messages"][-1].content
+
+    assert answer == NOT_COVERED
+    assert "### Reference" not in answer
+    assert "doi:" not in answer
 
 
 def test_miss_without_web_sources_does_not_answer_from_memory(
@@ -459,7 +612,7 @@ def test_miss_without_web_sources_does_not_answer_from_memory(
 
 
 def test_unsafe_final_reply_is_replaced(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr("app.internal.web_search.search_web", _fail_web)
+    monkeypatch.setattr("app.internal.web_search.search_web", _empty_web)
     monkeypatch.setattr(
         "app.internal.vector_store.search_hits",
         lambda query: [
@@ -497,7 +650,7 @@ def test_follow_up_is_rewritten_once_before_the_web(monkeypatch: pytest.MonkeyPa
         ]
 
     monkeypatch.setattr("app.internal.vector_store.search_hits", search_hits)
-    monkeypatch.setattr("app.internal.web_search.search_web", _fail_web)
+    monkeypatch.setattr("app.internal.web_search.search_web", _empty_web)
     model = ScriptedChat(
         replies=[
             AIMessage(content="IN_SCOPE"),
@@ -531,7 +684,7 @@ def test_follow_up_is_rewritten_once_before_the_web(monkeypatch: pytest.MonkeyPa
 def test_ungrounded_draft_is_replaced_by_a_supported_draft(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setattr("app.internal.web_search.search_web", _fail_web)
+    monkeypatch.setattr("app.internal.web_search.search_web", _empty_web)
     monkeypatch.setattr(
         "app.internal.vector_store.search_hits",
         lambda query: [
@@ -558,7 +711,7 @@ def test_ungrounded_draft_is_replaced_by_a_supported_draft(
 
 
 def test_second_ungrounded_draft_is_not_covered(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr("app.internal.web_search.search_web", _fail_web)
+    monkeypatch.setattr("app.internal.web_search.search_web", _empty_web)
     monkeypatch.setattr(
         "app.internal.vector_store.search_hits",
         lambda query: [
