@@ -7,7 +7,7 @@ from langchain_core.messages import BaseMessage
 from langchain_core.outputs import ChatResult
 from langchain_openai import ChatOpenAI
 
-from ..config import hf_model, hf_token
+from ..config import hf_model, hf_temperature, hf_token, hf_top_k, hf_top_p
 
 HF_OPENAI_BASE = "https://router.huggingface.co/v1"
 
@@ -28,7 +28,9 @@ class HuggingFaceChat(BaseChatModel):
             model=hf_model(),
             api_key=hf_token(),
             base_url=HF_OPENAI_BASE,
-            temperature=0,
+            temperature=hf_temperature(),
+            top_p=hf_top_p(),
+            extra_body={"top_k": hf_top_k()},
         )
 
     def _generate(

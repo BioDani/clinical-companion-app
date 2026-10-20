@@ -281,23 +281,31 @@ def _insert_batch(collection, prepared: list[dict]) -> None:
             raise RuntimeError(f"Weaviate insert failed: {result.errors}")
 
 
+def page_number(value: object) -> int:
+    """Return a positive page. Weaviate sends stored integers back as floats."""
+    if isinstance(value, bool) or value is None:
+        return 0
+    try:
+        number = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
+    return number if number > 0 else 0
+
+
 def _source(properties: dict) -> str:
     return str(properties.get("source") or "").strip()
 
 
 def _page(properties: dict) -> int:
-    page = properties.get("page")
-    if isinstance(page, int) and page > 0:
-        return page
-    return 0
+    return page_number(properties.get("page"))
 
 
 def _format_hit(properties: dict) -> str:
     text = str(properties.get("text") or "").strip()
     if not text:
         return ""
-    page = properties.get("page")
-    label = page if isinstance(page, int) and page > 0 else "?"
+    page = page_number(properties.get("page"))
+    label = str(page) if page else "?"
     source = _source(properties)
     if source:
         return f"{source}, page {label}: {text}"

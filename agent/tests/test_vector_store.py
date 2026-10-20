@@ -113,6 +113,28 @@ def test_search_hits_keeps_distance(monkeypatch: pytest.MonkeyPatch):
     ]
 
 
+def test_search_hits_reads_a_float_page(monkeypatch: pytest.MonkeyPatch):
+    _install(
+        monkeypatch,
+        [
+            SimpleNamespace(
+                properties={
+                    "page": 38.0,
+                    "text": "being sick is part of normal life",
+                    "source": "y5686e.pdf",
+                },
+                metadata=SimpleNamespace(distance=0.2),
+            )
+        ],
+    )
+
+    hits = search_hits("flu")
+    assert hits[0].page == 38
+    assert hits[0].text.startswith("y5686e.pdf, page 38:")
+    assert "### Reference" in format_book_reference(hits[0].text, hits)
+    assert "page 38" in format_book_reference(hits[0].text, hits)
+
+
 def test_search_hits_names_the_source_file(monkeypatch: pytest.MonkeyPatch):
     _install(
         monkeypatch,
@@ -398,6 +420,9 @@ def test_reference_groups_pages_by_source_file():
 
     assert format_book_reference("\n\n".join(hit.text for hit in hits), hits) == (
         "### Reference\n\n"
-        "- DGA.pdf, page 12, page 14\n"
-        "- WHO_TRS_916.pdf, page 4"
+        "- [Dietary Guidelines for Americans, 2025–2030]"
+        "(https://cdn.realfood.gov/DGA.pdf), page 12, page 14\n"
+        "- [Diet, nutrition and the prevention of chronic diseases "
+        "(WHO Technical Report Series 916)]"
+        "(https://iris.who.int/bitstream/handle/10665/42665/WHO_TRS_916.pdf), page 4"
     )
