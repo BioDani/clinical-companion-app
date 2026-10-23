@@ -332,6 +332,8 @@ class SafetyGuardrailMiddleware(AgentMiddleware):
         last_message = messages[-1]
         if not isinstance(last_message, AIMessage):
             return None
+        if (getattr(last_message, "additional_kwargs", None) or {}).get("intake"):
+            return None
         content = _text(last_message.content).strip()
         if not content or _skip_safety(content):
             return None

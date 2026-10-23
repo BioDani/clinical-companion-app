@@ -12,6 +12,8 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.runtime import Runtime
 
+from .intake import CLOSE, INTAKE_START, NOTICE, handle_intake, load_progress
+from .trace_mask import NOTES_PREFIX, install_langfuse_mask, note_sensitive
 from .guardrails import (
     HABIT_BOUNDARY,
     INTRODUCTION,
@@ -366,15 +368,7 @@ class EvidenceMiddleware(AgentMiddleware):
         if _stands_alone(question):
             lines.append(f"User: {question}")
         else:
-            for message in state.get("messages") or []:
-                text = _message_text(message).strip()
-                if not text or text.startswith("Use only the evidence below."):
-                    continue
-                kind = getattr(message, "type", "")
-                if kind == "system":
-                    continue
-                speaker = "User" if kind == "human" else "Companion"
-                lines.append(f"{speaker}: {text}")
+            lines.extend(lookup_lines(state.get("messages") or []))
         if not lines:
             return ""
         rewritten = self._label(REWRITE_PROMPT, "\n".join(lines)).strip()
@@ -383,7 +377,7 @@ class EvidenceMiddleware(AgentMiddleware):
         return rewritten
 
     def _prepare(self, state: CompanionState) -> dict[str, Any] | None:
-        question = latest_human(state)
+        question = latest_habit_human(state) or latest_human(state)
         label = _scope_label(self._label(SCOPE_PROMPT, question))
         if label == "GREETING":
             return _end(INTRODUCTION)
@@ -566,13 +560,93 @@ class CitationMiddleware(AgentMiddleware):
         return self._publish(state)
 
 
+def _skip_lookup(message: Any) -> bool:
+    """Intake turns and personal notes are not search text."""
+    kwargs = getattr(message, "additional_kwargs", None) or {}
+    if kwargs.get("intake"):
+        return True
+    text = _message_text(message).strip()
+    if text == INTAKE_START or text.startswith(NOTES_PREFIX) or text.startswith(NOTICE):
+        return True
+    if text == CLOSE:
+        return True
+    return False
+
+
+def lookup_lines(messages: list[Any]) -> list[str]:
+    lines: list[str] = []
+    for message in messages:
+        if _skip_lookup(message):
+            continue
+        text = _message_text(message).strip()
+        if not text or text.startswith("Use only the evidence below."):
+            continue
+        kind = getattr(message, "type", "")
+        if kind == "system":
+            continue
+        speaker = "User" if kind == "human" else "Companion"
+        lines.append(f"{speaker}: {text}")
+    return lines
+
+
+def latest_habit_human(state: dict[str, Any]) -> str:
+    for message in reversed(state.get("messages") or []):
+        if getattr(message, "type", "") != "human" or _skip_lookup(message):
+            continue
+        return _message_text(message)
+    return ""
+
+
+class IntakeMiddleware(AgentMiddleware):
+    """Ask the fixed introduction on the signed-in graph, before the body-mass stop."""
+
+    def _apply(self, state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
+        from .user_memory import store_from_runtime, user_id_from_runtime
+
+        store = store_from_runtime(runtime)
+        user_id = user_id_from_runtime(runtime)
+        if store is None or not user_id:
+            return None
+        if load_progress(store, user_id)["status"] != "pending":
+            return None
+        human = latest_human(state)
+        handled, reply, sensitive = handle_intake(store, user_id, human)
+        if not handled or not reply:
+            return None
+        for text in sensitive:
+            note_sensitive(text)
+        for message in state.get("messages") or []:
+            if getattr(message, "type", "") == "human" and _message_text(message).strip() == human.strip():
+                kwargs = dict(getattr(message, "additional_kwargs", None) or {})
+                kwargs["intake"] = True
+                message.additional_kwargs = kwargs
+        return {
+            "messages": [AIMessage(content=reply, additional_kwargs={"intake": True})],
+            "citations": "",
+            "jump_to": "end",
+        }
+
+    @hook_config(can_jump_to=["end"])
+    def before_agent(self, state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
+        return self._apply(state, runtime)
+
+    @hook_config(can_jump_to=["end"])
+    async def abefore_agent(self, state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
+        return await asyncio.to_thread(self._apply, state, runtime)
+
+
 def _middleware(chat, *, with_memory: bool) -> list:
     from .user_memory import UserMemoryMiddleware
 
-    stack: list = [
-        ContentFilterMiddleware(),
-        *pii_middleware(),
-    ]
+    stack: list = []
+    if with_memory:
+        stack.append(IntakeMiddleware())
+    stack.extend(
+        [
+            ContentFilterMiddleware(),
+            *pii_middleware(),
+        ]
+    )
     if with_memory:
         stack.append(UserMemoryMiddleware())
     stack.extend(
@@ -621,6 +695,7 @@ def make_companion_graph(config: dict | None = None):
     if langfuse_enabled():
         from langfuse.langchain import CallbackHandler
 
+        install_langfuse_mask()
         graph = graph.with_config({"callbacks": [CallbackHandler()]})
     return graph
 

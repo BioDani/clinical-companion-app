@@ -123,6 +123,47 @@ button:disabled { opacity: 0.45; cursor: default; }
   gap: 8px;
 }
 
+.memories {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex-shrink: 0;
+  max-height: 34%;
+  overflow: auto;
+}
+
+.memory-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.memory-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--sunken);
+}
+
+.memory-row span {
+  flex: 1 1 100%;
+}
+
+.memory-row button {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 8px;
+}
+
 .sidebar-actions {
   display: flex;
   flex-direction: column;

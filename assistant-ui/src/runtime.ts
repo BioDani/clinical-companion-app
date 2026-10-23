@@ -41,6 +41,77 @@ function lastHumanText(messages: readonly LangChainMessage[]): string {
 
 const EVIDENCE_PREFIX = "Use only the evidence below.";
 
+export const HEALTH_INTRODUCTION = "Health introduction";
+
+const INTAKE_CLOSE = "Thank you. I will use what you chose to share on later habit questions.";
+
+const INTAKE_HINTS = [
+  "Sharing these answers is optional.",
+  "What is your age?",
+  "What is your weight?",
+  "What is your height?",
+  "How many hours do you sleep at night?",
+  "How many meals do you eat per day?",
+  "What kind of diet do you follow?",
+  "Is there a condition that should change suggestions",
+  INTAKE_CLOSE,
+];
+
+type TitleMessage = {
+  role: string;
+  content: string | readonly { type: string; text?: string }[];
+};
+
+function titleText(message: TitleMessage): string {
+  const content = message.content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.map((part) => (part.type === "text" ? part.text ?? "" : "")).join("");
+}
+
+function intakeAssistant(text: string): boolean {
+  return INTAKE_HINTS.some((hint) => text.includes(hint));
+}
+
+/** Short history name from the visible conversation. Empty when the chat has no subject yet. */
+export function historyTitle(messages: readonly TitleMessage[]): string {
+  let expectingAnswer = false;
+  let closed = false;
+  let habit = "";
+  for (const message of messages) {
+    const text = titleText(message).trim();
+    if (!text || text === "INTAKE_START") continue;
+    const role = message.role;
+    if (role === "assistant" || role === "ai") {
+      if (!intakeAssistant(text)) {
+        expectingAnswer = false;
+        continue;
+      }
+      closed = text.includes(INTAKE_CLOSE);
+      expectingAnswer = !closed;
+      continue;
+    }
+    if (role !== "user" && role !== "human") continue;
+    if (expectingAnswer) {
+      expectingAnswer = false;
+      continue;
+    }
+    if (!habit) habit = text.slice(0, 80);
+  }
+  if (habit) return habit;
+  if (closed) return HEALTH_INTRODUCTION;
+  return "";
+}
+
+export async function writeThreadTitle(remoteId: string, title: string): Promise<void> {
+  const client = createClient();
+  const current = await client.threads.get(remoteId);
+  if (current.metadata?.title === title) return;
+  await client.threads.update(remoteId, {
+    metadata: { ...(current.metadata ?? {}), title },
+  });
+}
+
 const INTERNAL_LABELS = new Set([
   "GREETING",
   "IN_SCOPE",
@@ -48,6 +119,7 @@ const INTERNAL_LABELS = new Set([
   "SAFE",
   "UNSAFE",
   "NONE",
+  "INTAKE_START",
   "GROUNDED",
   "UNGROUNDED",
 ]);
@@ -90,18 +162,6 @@ function statusOf(error: unknown): number | undefined {
     if (typeof status === "number") return status;
   }
   return undefined;
-}
-
-function firstMessageTitle(
-  messages: readonly { role: string; content: readonly { type: string; text?: string }[] }[],
-): string {
-  for (const message of messages) {
-    if (message.role !== "user") continue;
-    for (const part of message.content) {
-      if (part.type === "text" && part.text?.trim()) return part.text.trim().slice(0, 80);
-    }
-  }
-  return "";
 }
 
 /**
@@ -218,14 +278,8 @@ function threadListAdapter(onUnauthorized: () => void): RemoteThreadListAdapter 
       return undefined;
     },
     async generateTitle(remoteId, messages) {
-      const title = firstMessageTitle(messages);
-      if (title) {
-        const client = createClient();
-        const current = await client.threads.get(remoteId);
-        await client.threads.update(remoteId, {
-          metadata: { ...(current.metadata ?? {}), title },
-        });
-      }
+      const title = historyTitle(messages);
+      if (title) await writeThreadTitle(remoteId, title);
       return createAssistantStream(() => undefined);
     },
   };

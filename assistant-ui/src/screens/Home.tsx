@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AssistantRuntimeProvider } from "@assistant-ui/core/react";
 import {
   ComposerPrimitive,
@@ -6,6 +6,7 @@ import {
   ThreadListItemPrimitive,
   ThreadListPrimitive,
   ThreadPrimitive,
+  useAui,
   useAuiState,
 } from "@assistant-ui/react";
 import { physicianNotice, shouldStartRun } from "../composer";
@@ -18,7 +19,8 @@ import {
   type Inline,
 } from "../markdown";
 import { formatMessageTime, rememberedMessageTime, rememberMessageTime } from "../messageTime";
-import { useCompanionRuntime } from "../runtime";
+import { historyTitle, useCompanionRuntime, writeThreadTitle } from "../runtime";
+import { loadSession } from "../session";
 
 type HomeProps = {
   onSignOut: () => void;
@@ -32,11 +34,132 @@ export function Home({ onSignOut, username }: HomeProps) {
       <div className="home">
         <AssistantSidebar onSignOut={onSignOut} username={username} />
         <section className="pane">
+          <IntakeSeed onUnauthorized={onSignOut} />
+          <HistoryTitle />
           <Thread />
           <p className="notice">{physicianNotice}</p>
         </section>
       </div>
     </AssistantRuntimeProvider>
+  );
+}
+
+type MemoryItem = { id: string; text: string; field: string | null };
+
+function authHeader(): { Authorization: string } | null {
+  const session = loadSession();
+  if (!session) return null;
+  return { Authorization: `Bearer ${session.token}` };
+}
+
+function IntakeSeed({ onUnauthorized }: { onUnauthorized: () => void }) {
+  const aui = useAui();
+  const messageCount = useAuiState((state) => state.thread.messages.length);
+  const remoteId = useAuiState((state) => state.threadListItem.remoteId);
+  const seededFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (messageCount > 0) return;
+    const mark = remoteId ?? "new";
+    if (seededFor.current === mark) return;
+    const headers = authHeader();
+    if (!headers) return;
+    let cancelled = false;
+    seededFor.current = mark;
+    void (async () => {
+      const response = await fetch("/api/intake", { headers });
+      if (response.status === 401) {
+        onUnauthorized();
+        return;
+      }
+      if (!response.ok || cancelled) return;
+      const body = (await response.json()) as { status?: string; next_field?: string | null };
+      if (cancelled || body.status !== "pending" || body.next_field !== "age") return;
+      aui.thread().append("INTAKE_START");
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [aui, messageCount, onUnauthorized, remoteId]);
+  return null;
+}
+
+function HistoryTitle() {
+  const aui = useAui();
+  const remoteId = useAuiState((state) => state.threadListItem.remoteId);
+  const signature = useAuiState((state) => state.thread.messages.map((message) => message.id).join("|"));
+  const written = useRef("");
+  useEffect(() => {
+    if (!remoteId) return;
+    const messages = aui.thread().getState().messages.map((message) => ({
+      role: message.role,
+      content: message.content,
+    }));
+    const title = historyTitle(messages);
+    if (!title || title === written.current) return;
+    written.current = title;
+    void writeThreadTitle(remoteId, title);
+  }, [aui, remoteId, signature]);
+  return null;
+}
+
+function Memories({ onUnauthorized }: { onUnauthorized: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [items, setItems] = useState<MemoryItem[]>([]);
+
+  useEffect(() => {
+    if (!open) return;
+    const headers = authHeader();
+    if (!headers) return;
+    let cancelled = false;
+    void (async () => {
+      const response = await fetch("/api/memories", { headers });
+      if (response.status === 401) {
+        onUnauthorized();
+        return;
+      }
+      if (!response.ok || cancelled) return;
+      const body = (await response.json()) as { items: MemoryItem[] };
+      if (!cancelled) setItems(body.items);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, onUnauthorized]);
+
+  async function remove(id: string) {
+    const headers = authHeader();
+    if (!headers) return;
+    const response = await fetch(`/api/memories/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+      headers,
+    });
+    if (response.status === 401) {
+      onUnauthorized();
+      return;
+    }
+    if (response.ok) setItems((current) => current.filter((item) => item.id !== id));
+  }
+
+  return (
+    <div className="memories">
+      <button type="button" className="new-chat" onClick={() => setOpen((value) => !value)}>
+        Memories
+      </button>
+      {open && items.length === 0 ? <p className="empty">No memories yet.</p> : null}
+      {open && items.length > 0 ? (
+        <ul className="memory-list">
+          {items.map((item) => (
+            <li key={item.id} className="memory-row">
+              <span>{item.text}</span>
+              <button type="button">Keep</button>
+              <button type="button" onClick={() => void remove(item.id)}>
+                Delete
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
   );
 }
 
@@ -53,6 +176,7 @@ function AssistantSidebar({ onSignOut, username }: HomeProps) {
           <strong>{username}</strong>
         </div>
       ) : null}
+      <Memories onUnauthorized={onSignOut} />
       <ThreadList onSignOut={onSignOut} />
     </aside>
   );
@@ -193,6 +317,7 @@ function UserMessage() {
   const createdAt = useAuiState((state) => state.message.createdAt);
   const live = useAuiState((state) => isLiveMessage(state));
   const time = useVisitTime(id, createdAt, live);
+  if (text.trim() === "INTAKE_START") return null;
   return (
     <MessagePrimitive.Root className="message message-user">
       <LinkedText text={text} />

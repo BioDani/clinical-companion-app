@@ -12,6 +12,7 @@
     "path": "./app/internal/persistence.py:generate_checkpointer"
   },
   "http": {
+    "app": "./app/routers/memories.py:app",
     "disable_store": true
   }
 }

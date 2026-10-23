@@ -147,8 +147,9 @@ activemq-data/
 # SageMath parsed files
 *.sage.py
 
-# Node (rbac-admin)
+# Node (rbac-admin, assistant-ui)
 node_modules/
+dist/
 coverage/
 .DS_Store
 
