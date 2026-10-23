@@ -145,7 +145,6 @@ KNOWLEDGE_SOURCES: dict[str, dict[str, str]] = {
 
 def citation_label(filename: str) -> str:
     """Return a Markdown link for a known PDF, or the filename itself."""
-    entry = KNOWLEDGE_SOURCES.get(filename)
-    if not entry:
-        return filename
-    return f"[{entry['title']}]({entry['url']})"
+    from .sources import citation_label as overlay_label
+
+    return overlay_label(filename)

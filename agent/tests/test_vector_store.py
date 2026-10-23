@@ -11,6 +11,7 @@ import pytest
 from app.internal.book import corpus_fingerprint
 from app.internal.embeddings import sentence_vectors
 from app.internal.graph import format_book_reference
+from app.internal.inclusion import save_disabled
 from app.internal.vector_store import (
     Passage,
     ensure_indexed,
@@ -18,6 +19,11 @@ from app.internal.vector_store import (
     search_hits,
     search_passages,
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolation_inclusion_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr("app.internal.inclusion._INCLUSION_DIR", tmp_path / "_inclusion")
 
 
 class _Query:
@@ -313,6 +319,7 @@ def _install_index(monkeypatch: pytest.MonkeyPatch, folder: Path):
         return [[0.1, 0.2] for _ in texts]
 
     vector_store._indexed = False
+    vector_store._current_fingerprint = ""
     monkeypatch.setattr(vector_store, "_connect_ready", lambda: client)
     monkeypatch.setattr(vector_store, "embed_texts", embed)
     monkeypatch.setattr("app.internal.book.PyPDFLoader", _Loader)
@@ -351,6 +358,7 @@ def test_index_includes_every_pdf_then_skips_and_rebuilds(
     assert first_embed_calls == 2
 
     vector_store._indexed = False
+    vector_store._current_fingerprint = ""
     ensure_indexed(tmp_path)
 
     assert len(embedded) == first_embed_calls
@@ -359,6 +367,7 @@ def test_index_includes_every_pdf_then_skips_and_rebuilds(
 
     (tmp_path / "a.pdf").write_bytes(b"revised a")
     vector_store._indexed = False
+    vector_store._current_fingerprint = ""
     ensure_indexed(tmp_path)
 
     assert collections.deleted == 1
@@ -394,6 +403,53 @@ def test_unreadable_pdf_drops_a_partial_index(
     assert collections.deleted == 1
     assert collections.exists_flag is False
     assert vector_store._indexed is False
+
+
+def test_index_omits_a_disabled_pdf_then_skips_rebuild(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    import app.internal.vector_store as vector_store
+
+    _write_pdfs(tmp_path, ["a.pdf", "b.pdf"])
+    save_disabled(["a.pdf"])
+    collections, embedded = _install_index(monkeypatch, tmp_path)
+
+    ensure_indexed(tmp_path)
+
+    assert _sources(collections.collection) == ["b.pdf"]
+    assert "a.pdf" not in _sources(collections.collection)
+    first_embed_calls = len(embedded)
+
+    vector_store._indexed = False
+    vector_store._current_fingerprint = ""
+    ensure_indexed(tmp_path)
+
+    assert collections.deleted == 0
+    assert len(embedded) == first_embed_calls
+    assert _sources(collections.collection) == ["b.pdf"]
+
+
+def test_empty_included_set_is_current(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    import app.internal.vector_store as vector_store
+
+    _write_pdfs(tmp_path, ["a.pdf", "b.pdf"])
+    save_disabled(["a.pdf", "b.pdf"])
+    collections, embedded = _install_index(monkeypatch, tmp_path)
+
+    ensure_indexed(tmp_path)
+
+    assert _sources(collections.collection) == []
+    assert collections.collection.config.description == corpus_fingerprint(tmp_path)
+    assert embedded == []
+
+    vector_store._indexed = False
+    vector_store._current_fingerprint = ""
+    ensure_indexed(tmp_path)
+
+    assert collections.deleted == 0
+    assert _sources(collections.collection) == []
 
 
 def test_reference_groups_pages_by_source_file():
