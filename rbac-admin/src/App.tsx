@@ -2,11 +2,12 @@ import { useCallback, useState } from "react";
 import type { Account } from "./directory";
 import { physicianNotice } from "./messages";
 import { clearSession, loadSession, type Session } from "./session";
+import { Resources } from "./screens/Resources";
 import { Roles } from "./screens/Roles";
 import { SignIn } from "./screens/SignIn";
 import { Users } from "./screens/Users";
 
-type Screen = "users" | "roles";
+type Screen = "users" | "roles" | "resources";
 
 export function App() {
   const [session, setSession] = useState<Session | null>(() => loadSession());
@@ -22,11 +23,11 @@ export function App() {
     });
   }, []);
 
-  function signOut() {
+  const signOut = useCallback(() => {
     clearSession();
     setSession(null);
     setScreen("users");
-  }
+  }, []);
 
   if (!session) {
     return <SignIn onSuccess={setSession} />;
@@ -49,6 +50,9 @@ export function App() {
           <button className={screen === "roles" ? "active" : ""} type="button" onClick={() => setScreen("roles")}>
             Roles
           </button>
+          <button className={screen === "resources" ? "active" : ""} type="button" onClick={() => setScreen("resources")}>
+            Resources
+          </button>
         </nav>
         <div className="sidebar-foot">
           <div className="who">
@@ -64,8 +68,10 @@ export function App() {
       <main className="main">
         {screen === "users" ? (
           <Users token={session.token} selfId={session.userId} onUnauthorized={signOut} onLoaded={onLoaded} />
-        ) : (
+        ) : screen === "roles" ? (
           <Roles token={session.token} onUnauthorized={signOut} />
+        ) : (
+          <Resources token={session.token} onUnauthorized={signOut} />
         )}
       </main>
     </div>

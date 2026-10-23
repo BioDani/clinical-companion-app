@@ -67,6 +67,8 @@ services:
     depends_on:
       rbac:
         condition: service_healthy
+      agent:
+        condition: service_healthy
     labels:
       - dev.orbstack.http-port=80
     healthcheck:
@@ -155,6 +157,9 @@ services:
       context: ./agent
     container_name: clinical-companion-agent-index
     environment: *agent-environment
+    volumes:
+      - knowledge-inclusion:/data/knowledge-inclusion
+      - ./agent/knowledge:/app/knowledge
     command: ["python", "-m", "app.internal.index_knowledge"]
     depends_on:
       weaviate:
@@ -168,6 +173,9 @@ services:
     ports:
       - "8000:8000"
     environment: *agent-environment
+    volumes:
+      - knowledge-inclusion:/data/knowledge-inclusion
+      - ./agent/knowledge:/app/knowledge
     labels:
       - dev.orbstack.http-port=8000
     depends_on:
@@ -203,6 +211,8 @@ services:
     environment: *agent-environment
     volumes:
       - companion-state:/data
+      - knowledge-inclusion:/data/knowledge-inclusion
+      - ./agent/knowledge:/app/knowledge
     command:
       - /bin/sh
       - -c
@@ -437,3 +447,4 @@ volumes:
   langfuse_minio_data:
   langfuse_redis_data:
   companion-state:
+  knowledge-inclusion:

@@ -15,7 +15,8 @@ from weaviate.classes.data import DataObject
 from weaviate.classes.query import MetadataQuery
 
 from ..config import weaviate_host
-from .book import _tokens, corpus_fingerprint, knowledge_pdfs, load_pdf_chunks
+from .book import _tokens, corpus_fingerprint, load_pdf_chunks
+from .inclusion import included_pdfs
 from .embeddings import embed_texts
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,7 @@ _CONNECT_DELAY_SECONDS = 2.0
 
 _index_lock = threading.Lock()
 _indexed = False
+_current_fingerprint = ""
 
 
 def indexed() -> bool:
@@ -125,12 +127,12 @@ def _distance(obj: object) -> float | None:
 
 
 def ensure_indexed(root: Path | None = None) -> None:
-    """Create Pilares and insert every knowledge PDF when the corpus changed."""
-    global _indexed
+    """Create Pilares and insert included knowledge PDFs when the corpus changed."""
+    global _indexed, _current_fingerprint
     with _index_lock:
-        if _indexed:
-            return
         fingerprint = corpus_fingerprint(root)
+        if _indexed and fingerprint == _current_fingerprint:
+            return
         client = _connect_ready()
         try:
             if _index_is_current(client, fingerprint):
@@ -138,6 +140,7 @@ def ensure_indexed(root: Path | None = None) -> None:
                     "Pilares collection matches the knowledge corpus; skipping ingest"
                 )
                 _indexed = True
+                _current_fingerprint = fingerprint
                 return
             if client.collections.exists(COLLECTION_NAME):
                 logger.info("Rebuilding Pilares collection for a new knowledge corpus")
@@ -152,6 +155,7 @@ def ensure_indexed(root: Path | None = None) -> None:
                     client.collections.delete(COLLECTION_NAME)
                 raise
             _indexed = True
+            _current_fingerprint = fingerprint
         finally:
             client.close()
 
@@ -162,7 +166,7 @@ def _index_is_current(client, fingerprint: str) -> bool:
     collection = client.collections.use(COLLECTION_NAME)
     if _collection_description(collection) != fingerprint:
         return False
-    return _object_count(collection) > 0
+    return True
 
 
 def _collection_description(collection) -> str:
@@ -227,8 +231,11 @@ def _object_count(collection) -> int:
 
 
 def _insert_corpus(collection, root: Path | None = None) -> None:
-    pdfs = knowledge_pdfs(root)
+    pdfs = included_pdfs(root)
     total = 0
+    if not pdfs:
+        logger.info("No included knowledge PDFs; leaving %s empty", COLLECTION_NAME)
+        return
     for number, path in enumerate(pdfs, start=1):
         chunks = load_pdf_chunks(path)
         if not chunks:
