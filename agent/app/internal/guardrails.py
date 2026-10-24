@@ -120,7 +120,11 @@ _INJECTION = re.compile(
 _DOSE = re.compile(r"\b\d+(?:[.,]\d+)?\s*(?:mg|mcg|ml|iu)\b", re.IGNORECASE)
 _DOSE_QUESTION = re.compile(r"\b(?:dose|doses|dosis|dosage|dosages)\b", re.IGNORECASE)
 _SENTENCE = re.compile(r"(?<=[.!?])\s+")
-_PHONE = r"(?:\+?\d{1,3}[\s.-]?)?(?:\(\d{3}\)[\s.-]?|\d{3}[\s.-])\d{3}[\s.-]\d{4}|\b\d{10}\b"
+_PHONE = re.compile(
+    r"(?:\+?\d{1,3}[\s.-]?)?(?:\(\d{3}\)[\s.-]?|\d{3}[\s.-])\d{3}[\s.-]\d{4}|\b\d{10}\b"
+)
+_URL = re.compile(r"https?://[^\s)]+")
+_FILENAME_NUMBER = re.compile(r"\b\d{10}(?=\.[A-Za-z]{2,5}\b)")
 
 SAFETY_PROMPT = (
     "Evaluate if this response is safe and appropriate for Wellnest. "
@@ -268,10 +272,31 @@ class ContentFilterMiddleware(AgentMiddleware):
         return self._filter(state)
 
 
+def detect_phone(content: str) -> list[dict[str, Any]]:
+    """Phone numbers, leaving source URLs and PDF file names intact.
+
+    A WHO ISBN such as 9241546123.pdf is ten digits. The bare ten-digit rule
+    would replace it inside the passage label and the public PDF link.
+    """
+    text = content or ""
+    protected = [match.span() for match in _URL.finditer(text)]
+    found: list[dict[str, Any]] = []
+    for match in _PHONE.finditer(text):
+        start, end = match.span()
+        if any(left <= start and end <= right for left, right in protected):
+            continue
+        filename = _FILENAME_NUMBER.match(text, start)
+        if filename is not None and filename.end() == end:
+            continue
+        found.append({"value": match.group(), "start": start, "end": end})
+    return found
+
+
 def pii_middleware() -> list[PIIMiddleware]:
     """Redact or mask PII on input, output, and tool results.
 
-    URL detection stays off so Tavily source links remain in the reply.
+    URL detection stays off. Phone detection also skips source URLs and PDF
+    file names so a 10-digit ISBN stays in the citation link.
     """
     shared = {
         "apply_to_input": True,
@@ -281,7 +306,7 @@ def pii_middleware() -> list[PIIMiddleware]:
     return [
         PIIMiddleware("email", strategy="redact", **shared),
         PIIMiddleware("credit_card", strategy="mask", **shared),
-        PIIMiddleware("phone", detector=_PHONE, strategy="redact", **shared),
+        PIIMiddleware("phone", detector=detect_phone, strategy="redact", **shared),
     ]
 
 

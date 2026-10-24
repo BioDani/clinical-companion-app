@@ -14,8 +14,22 @@ import { loadSession } from "./session";
 
 type ListedThread = {
   thread_id: string;
+  created_at?: string;
   metadata?: Record<string, unknown> | null;
 };
+
+/** Creation time stored on a history row. Null when the thread has no stamp. */
+export function historyCreatedAt(custom: Record<string, unknown> | undefined): Date | null {
+  const value = custom?.createdAt;
+  if (typeof value !== "string") return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function threadCustom(createdAt: string | undefined): { createdAt: string } | undefined {
+  const date = historyCreatedAt(createdAt ? { createdAt } : undefined);
+  return date ? { createdAt: date.toISOString() } : undefined;
+}
 
 function threadTitle(metadata: Record<string, unknown> | null | undefined): string | undefined {
   const title = metadata?.title;
@@ -238,6 +252,7 @@ function threadListAdapter(onUnauthorized: () => void): RemoteThreadListAdapter 
                 remoteId: thread.thread_id,
                 externalId: thread.thread_id,
                 title,
+                custom: threadCustom(thread.created_at),
               },
             ];
           }),
@@ -259,6 +274,7 @@ function threadListAdapter(onUnauthorized: () => void): RemoteThreadListAdapter 
           remoteId: thread.thread_id,
           externalId: thread.thread_id,
           title: threadTitle(thread.metadata as Record<string, unknown> | undefined),
+          custom: threadCustom(thread.created_at),
         };
       } catch (error) {
         if (statusOf(error) === 401) onUnauthorized();

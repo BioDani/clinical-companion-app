@@ -396,13 +396,18 @@ class EvidenceMiddleware(AgentMiddleware):
                 search_text = rewritten
                 hits = search_hits(rewritten)
                 kept = self._keep(rewritten, hits, terms)
+        if kept:
+            book = _book_text(kept)
+            return {
+                "citations": _citation_block(book, [], kept if book else None),
+                "messages": [HumanMessage(content=_evidence_message(book, "", question))],
+            }
         web_results, web_text = _web_evidence(search_text)
-        if not kept and not web_results:
+        if not web_results:
             return _end(NOT_COVERED)
-        book = _book_text(kept)
         return {
-            "citations": _citation_block(book, web_results, kept if book else None),
-            "messages": [HumanMessage(content=_evidence_message(book, web_text, question))],
+            "citations": _citation_block("", web_results, None),
+            "messages": [HumanMessage(content=_evidence_message("", web_text, question))],
         }
 
     @hook_config(can_jump_to=["end"])

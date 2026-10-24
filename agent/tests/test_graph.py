@@ -22,6 +22,7 @@ from app.internal.guardrails import (
     INTRODUCTION,
     NOT_COVERED,
     OUT_OF_SCOPE,
+    detect_phone,
     guard_tavily_results,
 )
 from app.internal.vector_store import Passage
@@ -343,16 +344,19 @@ def test_kept_book_page_is_complemented_by_the_web(monkeypatch: pytest.MonkeyPat
             )
         ],
     )
-    monkeypatch.setattr(
-        "app.internal.web_search.search_web",
-        lambda query, include_domains=None: [
+    web_calls = {"n": 0}
+
+    def search_web(query: str, include_domains: list[str] | None = None) -> list[dict]:
+        web_calls["n"] += 1
+        return [
             {
                 "title": "Vegetables",
                 "url": "https://www.cdc.gov/nutrition/vegetables",
                 "content": "Vegetables are part of a meal.",
             }
-        ],
-    )
+        ]
+
+    monkeypatch.setattr("app.internal.web_search.search_web", search_web)
     model = ScriptedChat(
         replies=[
             AIMessage(content="IN_SCOPE"),
@@ -374,8 +378,9 @@ def test_kept_book_page_is_complemented_by_the_web(monkeypatch: pytest.MonkeyPat
     assert "Vegetables help." in answer
     assert "### Reference" in answer
     assert "page 4" in answer
-    assert "### Sources" in answer
-    assert "https://www.cdc.gov/nutrition/vegetables" in answer
+    assert "### Sources" not in answer
+    assert "https://www.cdc.gov/nutrition/vegetables" not in answer
+    assert web_calls["n"] == 0
     assert "general knowledge" not in answer.lower()
     assert ["nostream" in tags for tags in model.configs] == [
         True,
@@ -389,9 +394,15 @@ def test_kept_book_page_is_complemented_by_the_web(monkeypatch: pytest.MonkeyPat
 def test_missing_book_calls_tavily_and_keeps_the_link(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    seen: dict = {}
+    seen: dict = {"calls": 0}
+    book = {"n": 0}
+
+    def search_hits(query: str) -> list[Passage]:
+        book["n"] += 1
+        return []
 
     def search(query: str, include_domains: list[str] | None = None):
+        seen["calls"] += 1
         seen["domains"] = include_domains
         return [
             {
@@ -406,7 +417,7 @@ def test_missing_book_calls_tavily_and_keeps_the_link(
             },
         ]
 
-    monkeypatch.setattr("app.internal.vector_store.search_hits", lambda query: [])
+    monkeypatch.setattr("app.internal.vector_store.search_hits", search_hits)
     monkeypatch.setattr("app.internal.web_search.search_web", search)
     model = ScriptedChat(
         replies=[
@@ -420,6 +431,8 @@ def test_missing_book_calls_tavily_and_keeps_the_link(
     result = _invoke(model, "What is a good diet?")
     answer = result["messages"][-1].content
 
+    assert seen["calls"] == 1
+    assert book["n"] == 2
     assert seen["domains"] == HEALTH_DOMAINS
     assert "Eat fiber at breakfast." in answer
     assert "https://example.com/fiber" in answer
@@ -585,17 +598,18 @@ def test_alzheimer_bibliography_is_not_the_book_answer(monkeypatch: pytest.Monke
 def test_miss_without_web_sources_does_not_answer_from_memory(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    searches = {"book": 0}
+    searches = {"book": 0, "web": 0}
 
     def search_hits(query: str) -> list[Passage]:
         searches["book"] += 1
         return []
 
+    def search_web(query: str, include_domains: list[str] | None = None) -> list[dict]:
+        searches["web"] += 1
+        return []
+
     monkeypatch.setattr("app.internal.vector_store.search_hits", search_hits)
-    monkeypatch.setattr(
-        "app.internal.web_search.search_web",
-        lambda query, include_domains=None: [],
-    )
+    monkeypatch.setattr("app.internal.web_search.search_web", search_web)
     model = ScriptedChat(
         replies=[
             AIMessage(content="IN_SCOPE"),
@@ -608,6 +622,7 @@ def test_miss_without_web_sources_does_not_answer_from_memory(
     assert "### Reference" not in result["messages"][-1].content
     assert "### Sources" not in result["messages"][-1].content
     assert searches["book"] == 2
+    assert searches["web"] == 1
     assert len(model.calls) == 2
 
 
@@ -635,6 +650,7 @@ def test_unsafe_final_reply_is_replaced(monkeypatch: pytest.MonkeyPatch):
 
 def test_follow_up_is_rewritten_once_before_the_web(monkeypatch: pytest.MonkeyPatch):
     queries: list[str] = []
+    web_calls = {"n": 0}
 
     def search_hits(query: str) -> list[Passage]:
         queries.append(query)
@@ -649,8 +665,12 @@ def test_follow_up_is_rewritten_once_before_the_web(monkeypatch: pytest.MonkeyPa
             )
         ]
 
+    def search_web(query: str, include_domains: list[str] | None = None) -> list[dict]:
+        web_calls["n"] += 1
+        return []
+
     monkeypatch.setattr("app.internal.vector_store.search_hits", search_hits)
-    monkeypatch.setattr("app.internal.web_search.search_web", _empty_web)
+    monkeypatch.setattr("app.internal.web_search.search_web", search_web)
     model = ScriptedChat(
         replies=[
             AIMessage(content="IN_SCOPE"),
@@ -673,7 +693,17 @@ def test_follow_up_is_rewritten_once_before_the_web(monkeypatch: pytest.MonkeyPa
     )
     answer = result["messages"][-1].content
 
+    rewrite_calls = [
+        call
+        for call in model.calls
+        if any(
+            "Rewrite the latest user question" in str(getattr(message, "content", ""))
+            for message in call
+        )
+    ]
     assert queries == ["what about breakfast?", "breakfast habits"]
+    assert len(rewrite_calls) == 1
+    assert web_calls["n"] == 0
     assert "Fruit is part of breakfast." in answer
     assert (
         "[Dietary Guidelines for Americans, 2025–2030]"
@@ -734,6 +764,67 @@ def test_second_ungrounded_draft_is_not_covered(monkeypatch: pytest.MonkeyPatch)
     assert answer == NOT_COVERED
     assert "### Reference" not in answer
     assert "### Sources" not in answer
+
+
+def test_phone_redaction_keeps_an_isbn_link_and_pdf_name():
+    url = "https://iris.who.int/bitstream/handle/10665/42716/9241546123.pdf"
+    text = (
+        "9241546123.pdf, page 188: intakes below 0.3 mg thiamine\n"
+        f"[Vitamin and mineral requirements in human nutrition, 2nd ed.]({url}), page 188\n"
+        "Call 555-123-4567 or 5551234567."
+    )
+    assert [match["value"] for match in detect_phone(text)] == [
+        "555-123-4567",
+        "5551234567",
+    ]
+
+
+def test_isbn_source_link_survives_the_reply(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr("app.internal.web_search.search_web", _empty_web)
+    monkeypatch.setattr(
+        "app.internal.vector_store.search_hits",
+        lambda query: [
+            Passage(
+                text="9241546123.pdf, page 188: intakes below 0.3 mg thiamine can lead to irritability",
+                distance=0.2,
+                source="9241546123.pdf",
+                page=188,
+            )
+        ],
+    )
+    model = ScriptedChat(
+        replies=[
+            AIMessage(content="IN_SCOPE"),
+            AIMessage(content="RELEVANT 1"),
+            AIMessage(content="Thiamine may help with irritability from low intake."),
+            AIMessage(content="GROUNDED"),
+            AIMessage(content="SAFE"),
+        ]
+    )
+    result = _invoke(model, "Can thiamine help with irritability?")
+    answer = result["messages"][-1].content
+    url = "https://iris.who.int/bitstream/handle/10665/42716/9241546123.pdf"
+
+    assert "9241546123.pdf" in _seen(model)
+    assert "REDACTED_PHONE" not in _seen(model)
+    assert url in answer
+    assert "REDACTED_PHONE" not in answer
+    assert "page 188" in answer
+
+
+def test_phone_number_is_redacted_before_the_model_call(monkeypatch: pytest.MonkeyPatch):
+    _block_search(monkeypatch)
+    model = ScriptedChat(
+        replies=[
+            AIMessage(content="I can talk about eating patterns."),
+            AIMessage(content="SAFE"),
+        ]
+    )
+    _invoke(model, "My phone is 555-123-4567")
+
+    seen = _seen(model)
+    assert "555-123-4567" not in seen
+    assert "REDACTED_PHONE" in seen
 
 
 def test_email_is_redacted_before_the_model_call(monkeypatch: pytest.MonkeyPatch):

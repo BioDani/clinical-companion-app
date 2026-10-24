@@ -19,7 +19,7 @@ import {
   type Inline,
 } from "../markdown";
 import { formatMessageTime, rememberedMessageTime, rememberMessageTime } from "../messageTime";
-import { historyTitle, useCompanionRuntime, writeThreadTitle } from "../runtime";
+import { historyCreatedAt, historyTitle, useCompanionRuntime, writeThreadTitle } from "../runtime";
 import { loadSession } from "../session";
 
 type HomeProps = {
@@ -142,8 +142,9 @@ function Memories({ onUnauthorized }: { onUnauthorized: () => void }) {
 
   return (
     <div className="memories">
-      <button type="button" className="new-chat" onClick={() => setOpen((value) => !value)}>
-        Memories
+      <button type="button" className="memories-toggle" onClick={() => setOpen((value) => !value)}>
+        <ButtonIcon name="memories" />
+        My memories
       </button>
       {open && items.length === 0 ? <p className="empty">No memories yet.</p> : null}
       {open && items.length > 0 ? (
@@ -177,6 +178,7 @@ function AssistantSidebar({ onSignOut, username }: HomeProps) {
         </div>
       ) : null}
       <Memories onUnauthorized={onSignOut} />
+      <hr className="sidebar-separator" />
       <ThreadList onSignOut={onSignOut} />
     </aside>
   );
@@ -195,6 +197,7 @@ function ThreadList({ onSignOut }: { onSignOut: () => void }) {
               >
                 <ThreadListItemPrimitive.Trigger className="thread-trigger">
                   <ThreadListItemPrimitive.Title />
+                  <ThreadCreated custom={threadListItem.custom} />
                 </ThreadListItemPrimitive.Trigger>
               </ThreadListItemPrimitive.Root>
             ) : null
@@ -202,12 +205,26 @@ function ThreadList({ onSignOut }: { onSignOut: () => void }) {
         </ThreadListPrimitive.Items>
       </div>
       <div className="sidebar-actions">
-        <ThreadListPrimitive.New className="new-chat">New chat</ThreadListPrimitive.New>
+        <ThreadListPrimitive.New className="new-chat">
+          <ButtonIcon name="new" />
+          New chat
+        </ThreadListPrimitive.New>
         <button type="button" className="sign-out" onClick={onSignOut}>
+          <ButtonIcon name="sign-out" />
           Sign out
         </button>
       </div>
     </ThreadListPrimitive.Root>
+  );
+}
+
+function ThreadCreated({ custom }: { custom?: Record<string, unknown> }) {
+  const created = historyCreatedAt(custom);
+  if (!created) return null;
+  return (
+    <time className="thread-created" dateTime={created.toISOString()}>
+      {formatMessageTime(created)}
+    </time>
   );
 }
 
@@ -406,15 +423,32 @@ function HiddenMessage() {
   return null;
 }
 
+function ButtonIcon({ name }: { name: "memories" | "new" | "send" | "sign-out" }) {
+  return (
+    <svg className="button-icon" viewBox="0 0 24 24" aria-hidden="true">
+      {name === "memories" ? (
+        <path d="M7 3h8l5 5v13H7zM15 3v5h5M9 13h6M9 17h6" />
+      ) : null}
+      {name === "new" ? <path d="M12 5v14M5 12h14" /> : null}
+      {name === "send" ? <path d="M4 12 20 4l-6 16-2.2-6.2L4 12z" /> : null}
+      {name === "sign-out" ? <path d="M10 7V4h10v16H10v-3M4 12h11M12 9l3 3-3 3" /> : null}
+    </svg>
+  );
+}
+
 function Composer() {
   const text = useAuiState((state) => state.thread.composer.text);
   return (
     <ComposerPrimitive.Root className="composer">
       <ComposerPrimitive.Input placeholder="Message" rows={2} />
       {shouldStartRun(text) ? (
-        <ComposerPrimitive.Send className="send">Send</ComposerPrimitive.Send>
+        <ComposerPrimitive.Send className="send">
+          <ButtonIcon name="send" />
+          Send
+        </ComposerPrimitive.Send>
       ) : (
         <button type="button" className="send" disabled>
+          <ButtonIcon name="send" />
           Send
         </button>
       )}

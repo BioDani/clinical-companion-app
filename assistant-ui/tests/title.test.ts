@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { HEALTH_INTRODUCTION, historyTitle } from "../src/runtime";
+import { HEALTH_INTRODUCTION, historyCreatedAt, historyTitle } from "../src/runtime";
 
 const close = "Thank you. I will use what you chose to share on later habit questions.";
 
@@ -41,6 +41,13 @@ describe("history titles", () => {
 
   it("leaves a chat with no subject untitled", () => {
     expect(historyTitle([])).toBe("");
+  });
+
+  it("reads the chat creation time from history metadata", () => {
+    const created = historyCreatedAt({ createdAt: "2026-10-24T19:09:00.000Z" });
+    expect(created?.toISOString()).toBe("2026-10-24T19:09:00.000Z");
+    expect(historyCreatedAt(undefined)).toBeNull();
+    expect(historyCreatedAt({ createdAt: "not-a-date" })).toBeNull();
   });
 
   it("trims a long habit question to 80 characters", () => {
