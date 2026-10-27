@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { AssistantRuntimeProvider } from "@assistant-ui/core/react";
 import {
   ComposerPrimitive,
@@ -102,8 +102,61 @@ function HistoryTitle() {
   return null;
 }
 
+function Overlay({
+  open,
+  title,
+  onClose,
+  children,
+}: {
+  open: boolean;
+  title: string;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const titleId = useId();
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    if (open) {
+      if (!dialog.open) dialog.showModal();
+      return;
+    }
+    if (dialog.open) dialog.close();
+  }, [open]);
+
+  return (
+    <dialog
+      ref={dialogRef}
+      className="overlay"
+      aria-labelledby={titleId}
+      onCancel={(event) => {
+        event.preventDefault();
+        onCloseRef.current();
+      }}
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onCloseRef.current();
+      }}
+    >
+      <div className="overlay-panel">
+        <header className="overlay-header">
+          <h2 id={titleId}>{title}</h2>
+          <button type="button" className="overlay-close" onClick={() => onCloseRef.current()} aria-label="Close">
+            Close
+          </button>
+        </header>
+        <div className="overlay-body">{children}</div>
+      </div>
+    </dialog>
+  );
+}
+
 function Memories({ onUnauthorized }: { onUnauthorized: () => void }) {
   const [open, setOpen] = useState(false);
+  const [loaded, setLoaded] = useState(false);
   const [items, setItems] = useState<MemoryItem[]>([]);
 
   useEffect(() => {
@@ -117,9 +170,15 @@ function Memories({ onUnauthorized }: { onUnauthorized: () => void }) {
         onUnauthorized();
         return;
       }
-      if (!response.ok || cancelled) return;
+      if (cancelled) return;
+      if (!response.ok) {
+        setLoaded(true);
+        return;
+      }
       const body = (await response.json()) as { items: MemoryItem[] };
-      if (!cancelled) setItems(body.items);
+      if (cancelled) return;
+      setItems(body.items);
+      setLoaded(true);
     })();
     return () => {
       cancelled = true;
@@ -142,24 +201,27 @@ function Memories({ onUnauthorized }: { onUnauthorized: () => void }) {
 
   return (
     <div className="memories">
-      <button type="button" className="memories-toggle" onClick={() => setOpen((value) => !value)}>
+      <button type="button" className="sidebar-toggle" aria-haspopup="dialog" onClick={() => setOpen(true)}>
         <ButtonIcon name="memories" />
         My memories
       </button>
-      {open && items.length === 0 ? <p className="empty">No memories yet.</p> : null}
-      {open && items.length > 0 ? (
-        <ul className="memory-list">
-          {items.map((item) => (
-            <li key={item.id} className="memory-row">
-              <span>{item.text}</span>
-              <button type="button">Keep</button>
-              <button type="button" onClick={() => void remove(item.id)}>
-                Delete
-              </button>
-            </li>
-          ))}
-        </ul>
-      ) : null}
+      <Overlay open={open} title="My memories" onClose={() => setOpen(false)}>
+        {!loaded ? <p className="empty">Loading memories…</p> : null}
+        {loaded && items.length === 0 ? <p className="empty">No memories yet.</p> : null}
+        {loaded && items.length > 0 ? (
+          <ul className="memory-list">
+            {items.map((item) => (
+              <li key={item.id} className="memory-row">
+                <span>{item.text}</span>
+                <button type="button">Keep</button>
+                <button type="button" onClick={() => void remove(item.id)}>
+                  Delete
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </Overlay>
     </div>
   );
 }
@@ -177,33 +239,47 @@ function AssistantSidebar({ onSignOut, username }: HomeProps) {
           <strong>{username}</strong>
         </div>
       ) : null}
-      <Memories onUnauthorized={onSignOut} />
-      <hr className="sidebar-separator" />
       <ThreadList onSignOut={onSignOut} />
     </aside>
   );
 }
 
 function ThreadList({ onSignOut }: { onSignOut: () => void }) {
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const hasHistory = useAuiState((state) =>
+    state.threads.threadItems.some((item) => Boolean(item.title?.trim())),
+  );
   return (
     <ThreadListPrimitive.Root className="thread-list-root">
-      <div className="thread-list">
-        <ThreadListPrimitive.Items>
-          {({ threadListItem }) =>
-            threadListItem.title?.trim() ? (
-              <ThreadListItemPrimitive.Root
-                className="thread-item"
-                data-thread={threadListItem.remoteId}
-              >
-                <ThreadListItemPrimitive.Trigger className="thread-trigger">
-                  <ThreadListItemPrimitive.Title />
-                  <ThreadCreated custom={threadListItem.custom} />
-                </ThreadListItemPrimitive.Trigger>
-              </ThreadListItemPrimitive.Root>
-            ) : null
-          }
-        </ThreadListPrimitive.Items>
-      </div>
+      <Memories onUnauthorized={onSignOut} />
+      <button type="button" className="sidebar-toggle" aria-haspopup="dialog" onClick={() => setHistoryOpen(true)}>
+        <ButtonIcon name="history" />
+        History
+      </button>
+      <Overlay open={historyOpen} title="History" onClose={() => setHistoryOpen(false)}>
+        {hasHistory ? null : <p className="empty">No chats yet.</p>}
+        <div className="thread-list">
+          <ThreadListPrimitive.Items>
+            {({ threadListItem }) =>
+              threadListItem.title?.trim() ? (
+                <ThreadListItemPrimitive.Root
+                  className="thread-item"
+                  data-thread={threadListItem.remoteId}
+                >
+                  <ThreadListItemPrimitive.Trigger
+                    className="thread-trigger"
+                    onClick={() => setHistoryOpen(false)}
+                  >
+                    <ThreadListItemPrimitive.Title />
+                    <ThreadCreated custom={threadListItem.custom} />
+                  </ThreadListItemPrimitive.Trigger>
+                </ThreadListItemPrimitive.Root>
+              ) : null
+            }
+          </ThreadListPrimitive.Items>
+        </div>
+      </Overlay>
+      <hr className="sidebar-separator" />
       <div className="sidebar-actions">
         <ThreadListPrimitive.New className="new-chat">
           <ButtonIcon name="new" />
@@ -423,12 +499,13 @@ function HiddenMessage() {
   return null;
 }
 
-function ButtonIcon({ name }: { name: "memories" | "new" | "send" | "sign-out" }) {
+function ButtonIcon({ name }: { name: "memories" | "history" | "new" | "send" | "sign-out" }) {
   return (
     <svg className="button-icon" viewBox="0 0 24 24" aria-hidden="true">
       {name === "memories" ? (
         <path d="M7 3h8l5 5v13H7zM15 3v5h5M9 13h6M9 17h6" />
       ) : null}
+      {name === "history" ? <path d="M12 8v5l3 2M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18" /> : null}
       {name === "new" ? <path d="M12 5v14M5 12h14" /> : null}
       {name === "send" ? <path d="M4 12 20 4l-6 16-2.2-6.2L4 12z" /> : null}
       {name === "sign-out" ? <path d="M10 7V4h10v16H10v-3M4 12h11M12 9l3 3-3 3" /> : null}
