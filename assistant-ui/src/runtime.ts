@@ -117,12 +117,69 @@ export function historyTitle(messages: readonly TitleMessage[]): string {
   return "";
 }
 
+type HistoryRow = {
+  status: "regular";
+  remoteId: string;
+  externalId: string;
+  title: string;
+  custom?: { createdAt: string };
+};
+
+type RememberedThread = {
+  title: string;
+  custom?: { createdAt: string };
+};
+
+const rememberedThreads = new Map<string, RememberedThread>();
+const pendingTitleWrites = new Set<Promise<void>>();
+
+/** Threads titled in this session, kept when a history reload has not caught up. */
+export function withRememberedThreads(
+  listed: readonly HistoryRow[],
+  remembered: ReadonlyMap<string, RememberedThread> = rememberedThreads,
+): HistoryRow[] {
+  const seen = new Set(listed.map((thread) => thread.remoteId));
+  const missing: HistoryRow[] = [];
+  for (const [remoteId, saved] of remembered) {
+    if (seen.has(remoteId) || !saved.title.trim()) continue;
+    missing.push({
+      status: "regular",
+      remoteId,
+      externalId: remoteId,
+      title: saved.title,
+      custom: saved.custom,
+    });
+  }
+  return [...missing, ...listed];
+}
+
+/** Resolves when every in-flight title save has finished. */
+export function whenThreadTitlesSettled(): Promise<void> {
+  return Promise.all([...pendingTitleWrites]).then(() => undefined);
+}
+
 export async function writeThreadTitle(remoteId: string, title: string): Promise<void> {
+  const task = persistThreadTitle(remoteId, title);
+  const settled = task.then(
+    () => undefined,
+    () => undefined,
+  );
+  pendingTitleWrites.add(settled);
+  void settled.finally(() => pendingTitleWrites.delete(settled));
+  return task;
+}
+
+async function persistThreadTitle(remoteId: string, title: string): Promise<void> {
   const client = createClient();
   const current = await client.threads.get(remoteId);
-  if (current.metadata?.title === title) return;
-  await client.threads.update(remoteId, {
-    metadata: { ...(current.metadata ?? {}), title },
+  if (current.metadata?.title !== title) {
+    await client.threads.update(remoteId, {
+      metadata: { ...(current.metadata ?? {}), title },
+    });
+  }
+  rememberedThreads.set(remoteId, {
+    title,
+    custom: threadCustom(current.created_at),
   });
 }
 
@@ -242,21 +299,20 @@ function threadListAdapter(onUnauthorized: () => void): RemoteThreadListAdapter 
           sortBy: "updated_at",
           sortOrder: "desc",
         })) as ListedThread[];
-        return {
-          threads: threads.flatMap((thread) => {
-            const title = threadTitle(thread.metadata);
-            if (!title) return [];
-            return [
-              {
-                status: "regular" as const,
-                remoteId: thread.thread_id,
-                externalId: thread.thread_id,
-                title,
-                custom: threadCustom(thread.created_at),
-              },
-            ];
-          }),
-        };
+        const listed = threads.flatMap((thread) => {
+          const title = threadTitle(thread.metadata);
+          if (!title) return [];
+          return [
+            {
+              status: "regular" as const,
+              remoteId: thread.thread_id,
+              externalId: thread.thread_id,
+              title,
+              custom: threadCustom(thread.created_at),
+            },
+          ];
+        });
+        return { threads: withRememberedThreads(listed) };
       } catch (error) {
         if (statusOf(error) === 401) onUnauthorized();
         throw error;
@@ -281,8 +337,8 @@ function threadListAdapter(onUnauthorized: () => void): RemoteThreadListAdapter 
         throw error;
       }
     },
-    async rename() {
-      return undefined;
+    async rename(remoteId, newTitle) {
+      await writeThreadTitle(remoteId, newTitle);
     },
     async archive() {
       return undefined;
@@ -295,8 +351,11 @@ function threadListAdapter(onUnauthorized: () => void): RemoteThreadListAdapter 
     },
     async generateTitle(remoteId, messages) {
       const title = historyTitle(messages);
-      if (title) await writeThreadTitle(remoteId, title);
-      return createAssistantStream(() => undefined);
+      if (!title) return createAssistantStream(() => undefined);
+      await writeThreadTitle(remoteId, title);
+      return createAssistantStream((controller) => {
+        controller.appendText(title);
+      });
     },
   };
 }

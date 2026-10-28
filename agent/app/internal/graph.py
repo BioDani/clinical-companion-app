@@ -40,13 +40,17 @@ SYSTEM_PROMPT = (
     "You are Wellnest, your everyday wellness companion for diet, exercise, "
     "and healthy habits. "
     "You are not a diagnostic device and you do not replace a physician. "
-    "Keep answers concise and in English. "
+    "Write a practical answer in English. "
+    "Start with the recommendation. "
+    "Then give the foods, habits, or steps the evidence names. "
+    "Use short sections when the evidence supports more than one action. "
     "Answer only from the evidence message in this turn. "
     "Do not add facts from memory. "
     "Do not say the answer is general knowledge. "
     "Do not diagnose or prescribe. "
     "Do not name a medication, a dose, or a treatment regimen. "
     "If a source mentions drugs, leave them out and keep only lifestyle habits. "
+    "Do not add a references list or a sources list. "
     "Remind the user this is informational guidance only."
 )
 
@@ -95,6 +99,7 @@ GROUNDED_PROMPT = (
 
 _PAGE = re.compile(r"\bpage (\d+)\b")
 _GENERAL_KNOWLEDGE = re.compile(r"^.*general knowledge.*$", re.IGNORECASE | re.MULTILINE)
+_REFERENCE_HEADING = re.compile(r"^#{0,3}\s*references?\s*:?\s*$", re.IGNORECASE)
 _DEFINITION = re.compile(
     r"^\s*what(?:'s| is| are)\s+(?:a |an |the )?(.+?)\s*\??\s*$",
     re.IGNORECASE,
@@ -398,9 +403,12 @@ class EvidenceMiddleware(AgentMiddleware):
                 kept = self._keep(rewritten, hits, terms)
         if kept:
             book = _book_text(kept)
+            web_results, web_text = _web_evidence(search_text)
             return {
-                "citations": _citation_block(book, [], kept if book else None),
-                "messages": [HumanMessage(content=_evidence_message(book, "", question))],
+                "citations": _citation_block(book, web_results, kept if book else None),
+                "messages": [
+                    HumanMessage(content=_evidence_message(book, web_text, question))
+                ],
             }
         web_results, web_text = _web_evidence(search_text)
         if not web_results:
@@ -427,6 +435,25 @@ class EvidenceMiddleware(AgentMiddleware):
 def _strip_general_knowledge(text: str) -> str:
     cleaned = _GENERAL_KNOWLEDGE.sub("", text)
     return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+
+
+def _citation_line(line: str) -> bool:
+    trimmed = line.strip()
+    return not trimmed or trimmed.startswith(("- ", "* "))
+
+
+def _strip_model_references(text: str) -> str:
+    """Drop a trailing references list. The citation footer already lists those links."""
+    lines = text.splitlines()
+    cut = None
+    for index, line in enumerate(lines):
+        if _REFERENCE_HEADING.match(line.strip()):
+            cut = index
+    if cut is None:
+        return text
+    if not all(_citation_line(line) for line in lines[cut + 1 :]):
+        return text
+    return "\n".join(lines[:cut]).strip()
 
 
 _FIXED_REPLY = frozenset(
@@ -538,7 +565,7 @@ class CitationMiddleware(AgentMiddleware):
         if not isinstance(last_message, AIMessage):
             return
         content = last_message.content if isinstance(last_message.content, str) else ""
-        body = _strip_general_knowledge(content)
+        body = _strip_model_references(_strip_general_knowledge(content))
         if _withholds_citations(body) or citations in body:
             last_message.content = body
             return

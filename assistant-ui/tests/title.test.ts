@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { HEALTH_INTRODUCTION, historyCreatedAt, historyTitle } from "../src/runtime";
+import { HEALTH_INTRODUCTION, historyCreatedAt, historyTitle, withRememberedThreads } from "../src/runtime";
 
 const close = "Thank you. I will use what you chose to share on later habit questions.";
 
@@ -53,5 +53,23 @@ describe("history titles", () => {
   it("trims a long habit question to 80 characters", () => {
     const habit = "What is an evidence-based breakfast pattern I can follow on weekdays and weekends too?";
     expect(historyTitle([user(habit)])).toBe(habit.slice(0, 80));
+  });
+
+  it("keeps a chat titled in this session when the server list omits it", () => {
+    const listed = [
+      {
+        status: "regular" as const,
+        remoteId: "older",
+        externalId: "older",
+        title: "Older chat",
+      },
+    ];
+    const remembered = new Map([
+      ["fresh", { title: "Morning walk", custom: { createdAt: "2026-10-27T12:00:00.000Z" } }],
+      ["older", { title: "Older chat" }],
+    ]);
+    const threads = withRememberedThreads(listed, remembered);
+    expect(threads.map((thread) => thread.remoteId)).toEqual(["fresh", "older"]);
+    expect(threads[0]?.title).toBe("Morning walk");
   });
 });

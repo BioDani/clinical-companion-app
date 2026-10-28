@@ -19,7 +19,12 @@ import {
   type Inline,
 } from "../markdown";
 import { formatMessageTime, rememberedMessageTime, rememberMessageTime } from "../messageTime";
-import { historyCreatedAt, historyTitle, useCompanionRuntime, writeThreadTitle } from "../runtime";
+import {
+  historyCreatedAt,
+  historyTitle,
+  useCompanionRuntime,
+  whenThreadTitlesSettled,
+} from "../runtime";
 import { loadSession } from "../session";
 
 type HomeProps = {
@@ -97,7 +102,11 @@ function HistoryTitle() {
     const title = historyTitle(messages);
     if (!title || title === written.current) return;
     written.current = title;
-    void writeThreadTitle(remoteId, title);
+    try {
+      void aui.threadListItem().rename(title);
+    } catch {
+      written.current = "";
+    }
   }, [aui, remoteId, signature]);
   return null;
 }
@@ -246,9 +255,21 @@ function AssistantSidebar({ onSignOut, username }: HomeProps) {
 
 function ThreadList({ onSignOut }: { onSignOut: () => void }) {
   const [historyOpen, setHistoryOpen] = useState(false);
+  const aui = useAui();
   const hasHistory = useAuiState((state) =>
     state.threads.threadItems.some((item) => Boolean(item.title?.trim())),
   );
+  useEffect(() => {
+    if (!historyOpen) return;
+    let cancelled = false;
+    void (async () => {
+      await whenThreadTitlesSettled();
+      if (!cancelled) await aui.threads().reload();
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [aui, historyOpen]);
   return (
     <ThreadListPrimitive.Root className="thread-list-root">
       <Memories onUnauthorized={onSignOut} />
