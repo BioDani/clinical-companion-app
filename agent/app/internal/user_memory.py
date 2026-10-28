@@ -83,6 +83,22 @@ def store_field(store: MemoryStore, user_id: str, field_id: str, text: str) -> s
     return text
 
 
+def measurement_notes(store: MemoryStore, user_id: str) -> str:
+    """Stored weight and height text. Other memories are not included."""
+    weight: str | None = None
+    height: str | None = None
+    for item in list_memories(store, user_id):
+        field = item.get("field")
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        if field == "weight" and weight is None:
+            weight = text
+        elif field == "height" and height is None:
+            height = text
+    return "\n".join(part for part in (weight, height) if part)
+
+
 def list_memories(store: MemoryStore, user_id: str) -> list[dict[str, str | None]]:
     items: list[dict[str, str | None]] = []
     for item in _search(store, namespace_for(user_id)):

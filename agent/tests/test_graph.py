@@ -11,6 +11,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import Field
 
+from app.internal.bmi import INVALID_MEASUREMENTS, NEED_BOTH, NEED_HEIGHT, NEED_WEIGHT
 from app.internal.graph import (
     HABIT_BOUNDARY,
     REFUSAL,
@@ -115,6 +116,7 @@ def test_dose_question_is_refused_without_search_or_citations(
     for question in (
         "what is the adequate dosis for Amoxicillin?",
         "Is 500 mg enough?",
+        "Tell me exactly how much insulin I should take based on my blood sugar reading",
     ):
         model = ScriptedChat()
         result = _invoke(model, question)
@@ -184,6 +186,50 @@ def test_height_and_weight_returns_bmi_without_the_model(
 
     assert result["messages"][-1].content == "BMI 25.9 (overweight)"
     assert model.calls == []
+
+
+def test_bmi_request_asks_for_measurements_without_search(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _block_search(monkeypatch)
+    model = ScriptedChat()
+    result = _invoke(model, "Can you calculate my BMI?")
+
+    assert result["messages"][-1].content == NEED_BOTH
+    assert result.get("citations", "") == ""
+    assert model.calls == []
+
+
+def test_bmi_request_with_one_measurement_asks_for_the_other(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _block_search(monkeypatch)
+    height_only = _invoke(ScriptedChat(), "Please calculate my bmi. I am 183 cm")
+    weight_only = _invoke(ScriptedChat(), "Please calculate my BMI. I weigh 75 kg")
+
+    assert height_only["messages"][-1].content == NEED_WEIGHT
+    assert weight_only["messages"][-1].content == NEED_HEIGHT
+
+
+def test_bmi_request_with_both_measurements_uses_the_tool(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _block_search(monkeypatch)
+    model = ScriptedChat()
+    result = _invoke(model, "I'm 183cm and 75kg. Can you calculate my BMI?")
+
+    assert result["messages"][-1].content == "BMI 22.4 (normal)"
+    assert model.calls == []
+
+
+def test_invalid_bmi_measurements_are_rejected(monkeypatch: pytest.MonkeyPatch):
+    _block_search(monkeypatch)
+    zero = _invoke(ScriptedChat(), "My height is 0 cm and my weight is 75 kg")
+    blank = _invoke(ScriptedChat(), "Calculate my BMI. I weigh abc kg and I am 183 cm")
+
+    assert zero["messages"][-1].content == INVALID_MEASUREMENTS
+    assert blank["messages"][-1].content == INVALID_MEASUREMENTS
+    assert not zero["messages"][-1].content.startswith("BMI ")
 
 
 def test_tavily_guard_drops_doses_injection_and_keeps_a_clean_link():

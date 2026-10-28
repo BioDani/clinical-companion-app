@@ -12,6 +12,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.runtime import Runtime
 
+from .bmi import INVALID_MEASUREMENTS, NEED_BOTH, NEED_HEIGHT, NEED_WEIGHT
 from .intake import CLOSE, INTAKE_START, NOTICE, handle_intake, load_progress
 from .trace_mask import NOTES_PREFIX, install_langfuse_mask, note_sensitive
 from .guardrails import (
@@ -457,7 +458,17 @@ def _strip_model_references(text: str) -> str:
 
 
 _FIXED_REPLY = frozenset(
-    {REFUSAL, HABIT_BOUNDARY, INTRODUCTION, OUT_OF_SCOPE, NOT_COVERED}
+    {
+        REFUSAL,
+        HABIT_BOUNDARY,
+        INTRODUCTION,
+        OUT_OF_SCOPE,
+        NOT_COVERED,
+        NEED_BOTH,
+        NEED_WEIGHT,
+        NEED_HEIGHT,
+        INVALID_MEASUREMENTS,
+    }
 )
 
 _DECLINE = (

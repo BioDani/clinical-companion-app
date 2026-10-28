@@ -7,10 +7,11 @@ from app.internal.graph import (
     _middleware,
     lookup_lines,
 )
+from app.internal.bmi import NEED_BOTH, NEED_WEIGHT
 from app.internal.guardrails import ContentFilterMiddleware
 from app.internal.intake import CLOSE, handle_intake, load_progress, save_progress
 from app.internal.trace_mask import NOTES_PREFIX, redact, note_sensitive
-from app.internal.user_memory import delete_memory, existing_texts, list_memories
+from app.internal.user_memory import delete_memory, existing_texts, list_memories, store_field
 from app.routers.memories import app, get_store
 from fastapi.testclient import TestClient
 from tests.tokens import make_token
@@ -116,6 +117,56 @@ def test_height_and_weight_during_intake_are_not_a_body_mass_reading():
     )
     assert blocked is not None
     assert "BMI" in blocked["messages"][0].content
+
+
+def test_bmi_request_uses_stored_weight_and_height():
+    store = Store()
+    store_field(store, "user-1", "weight", "Weight: 75 kg")
+    store_field(store, "user-1", "height", "Height: 183 cm")
+    runtime = Runtime(store, "user-1")
+    blocked = ContentFilterMiddleware().before_agent(
+        {"messages": [HumanMessage(content="Can you calculate my BMI?")]},
+        runtime,
+    )
+    assert blocked is not None
+    assert blocked["messages"][0].content == "BMI 22.4 (normal)"
+    assert blocked["jump_to"] == "end"
+
+    partial = ContentFilterMiddleware().before_agent(
+        {"messages": [HumanMessage(content="Can you calculate my BMI?")]},
+        Runtime(store, "user-2"),
+    )
+    assert partial is not None
+    assert partial["messages"][0].content == NEED_BOTH
+
+
+def test_bmi_request_fills_only_the_missing_stored_measurement():
+    store = Store()
+    store_field(store, "user-1", "height", "Height: 183")
+    blocked = ContentFilterMiddleware().before_agent(
+        {"messages": [HumanMessage(content="Please calculate my BMI")]},
+        Runtime(store, "user-1"),
+    )
+    assert blocked is not None
+    assert blocked["messages"][0].content == NEED_WEIGHT
+
+    filled = ContentFilterMiddleware().before_agent(
+        {"messages": [HumanMessage(content="I weigh 75 kg. Can you calculate my BMI?")]},
+        Runtime(store, "user-1"),
+    )
+    assert filled is not None
+    assert filled["messages"][0].content == "BMI 22.4 (normal)"
+
+
+def test_stored_measurements_do_not_answer_a_habit_question():
+    store = Store()
+    store_field(store, "user-1", "weight", "Weight: 75 kg")
+    store_field(store, "user-1", "height", "Height: 183 cm")
+    blocked = ContentFilterMiddleware().before_agent(
+        {"messages": [HumanMessage(content="What is a good breakfast?")]},
+        Runtime(store, "user-1"),
+    )
+    assert blocked is None
 
 
 def test_deleting_a_memory_does_not_restart_the_introduction():
