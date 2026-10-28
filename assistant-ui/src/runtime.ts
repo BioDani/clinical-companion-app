@@ -205,6 +205,31 @@ export function isVisibleTranscriptMessage(message: LangChainMessage): boolean {
   return true;
 }
 
+/** Visible message text a history search may match. Titles are not included. */
+export function visibleSearchTexts(messages: readonly LangChainMessage[]): string[] {
+  return messages.flatMap((message) => {
+    if (!isVisibleTranscriptMessage(message)) return [];
+    const text = messageText(message).trim();
+    return text ? [text] : [];
+  });
+}
+
+/** Read one titled thread's visible text. The query is not sent. A failed read is empty. */
+export async function loadVisibleSearchTexts(
+  threadId: string,
+  onUnauthorized: () => void,
+): Promise<string[]> {
+  try {
+    const state = await createClient().threads.getState<{
+      messages?: LangChainMessage[];
+    }>(threadId);
+    return visibleSearchTexts(state.values.messages ?? []);
+  } catch (error) {
+    if (statusOf(error) === 401) onUnauthorized();
+    return [];
+  }
+}
+
 function visibleStreamData(data: unknown): unknown {
   if (!Array.isArray(data)) return data;
   return data.filter((message) => isVisibleTranscriptMessage(message as LangChainMessage));

@@ -10,6 +10,11 @@ import {
   useAuiState,
 } from "@assistant-ui/react";
 import { physicianNotice, shouldStartRun } from "../composer";
+import {
+  comparedHistoryQuery,
+  historySearchActive,
+  messageMatchesQuery,
+} from "../historySearch";
 import { linkParts } from "../links";
 import {
   parseInlines,
@@ -22,6 +27,7 @@ import { formatMessageTime, rememberedMessageTime, rememberMessageTime } from ".
 import {
   historyCreatedAt,
   historyTitle,
+  loadVisibleSearchTexts,
   useCompanionRuntime,
   whenThreadTitlesSettled,
 } from "../runtime";
@@ -255,10 +261,25 @@ function AssistantSidebar({ onSignOut, username }: HomeProps) {
 
 function ThreadList({ onSignOut }: { onSignOut: () => void }) {
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyQuery, setHistoryQuery] = useState("");
+  const [searchTexts, setSearchTexts] = useState<Record<string, string[]>>({});
   const aui = useAui();
   const hasHistory = useAuiState((state) =>
     state.threads.threadItems.some((item) => Boolean(item.title?.trim())),
   );
+  const titledIds = useAuiState((state) =>
+    state.threads.threadItems
+      .filter((item) => Boolean(item.title?.trim()) && item.remoteId)
+      .map((item) => item.remoteId)
+      .join("|"),
+  );
+  const compared = comparedHistoryQuery(historyQuery);
+  const searchActive = historySearchActive(compared);
+  const closeHistory = () => {
+    setHistoryOpen(false);
+    setHistoryQuery("");
+    setSearchTexts({});
+  };
   useEffect(() => {
     if (!historyOpen) return;
     let cancelled = false;
@@ -270,6 +291,33 @@ function ThreadList({ onSignOut }: { onSignOut: () => void }) {
       cancelled = true;
     };
   }, [aui, historyOpen]);
+  useEffect(() => {
+    if (!historyOpen || !searchActive) return;
+    const ids = titledIds.split("|").filter(Boolean);
+    const missing = ids.filter((id) => searchTexts[id] === undefined);
+    if (missing.length === 0) return;
+    let cancelled = false;
+    void (async () => {
+      const loaded = await Promise.all(
+        missing.map(async (id) => [id, await loadVisibleSearchTexts(id, onSignOut)] as const),
+      );
+      if (cancelled) return;
+      setSearchTexts((current) => {
+        const next = { ...current };
+        for (const [id, texts] of loaded) next[id] = texts;
+        return next;
+      });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [historyOpen, onSignOut, searchActive, searchTexts, titledIds]);
+  const titledIdList = titledIds ? titledIds.split("|") : [];
+  const searchSettled = titledIdList.every((id) => searchTexts[id] !== undefined);
+  const searchHasMatch = titledIdList.some((id) =>
+    (searchTexts[id] ?? []).some((text) => messageMatchesQuery(text, compared)),
+  );
+  const showNothingMatched = hasHistory && searchActive && searchSettled && !searchHasMatch;
   return (
     <ThreadListPrimitive.Root className="thread-list-root">
       <Memories onUnauthorized={onSignOut} />
@@ -277,26 +325,48 @@ function ThreadList({ onSignOut }: { onSignOut: () => void }) {
         <ButtonIcon name="history" />
         History
       </button>
-      <Overlay open={historyOpen} title="History" onClose={() => setHistoryOpen(false)}>
+      <Overlay open={historyOpen} title="History" onClose={closeHistory}>
+        <form className="history-search-row" onSubmit={(event) => event.preventDefault()}>
+          <input
+            className="history-search"
+            type="search"
+            aria-label="Search chats"
+            placeholder="Search chats"
+            value={historyQuery}
+            onChange={(event) => setHistoryQuery(event.target.value)}
+          />
+          <button type="submit" className="history-search-button">
+            Search
+          </button>
+        </form>
+        <hr className="sidebar-separator" />
         {hasHistory ? null : <p className="empty">No chats yet.</p>}
+        {showNothingMatched ? <p className="empty">Nothing matched.</p> : null}
         <div className="thread-list">
           <ThreadListPrimitive.Items>
-            {({ threadListItem }) =>
-              threadListItem.title?.trim() ? (
+            {({ threadListItem }) => {
+              if (!threadListItem.title?.trim()) return null;
+              const remoteId = threadListItem.remoteId;
+              if (searchActive) {
+                const texts = remoteId ? searchTexts[remoteId] : undefined;
+                const matched = (texts ?? []).some((text) => messageMatchesQuery(text, compared));
+                if (!matched) return null;
+              }
+              return (
                 <ThreadListItemPrimitive.Root
                   className="thread-item"
-                  data-thread={threadListItem.remoteId}
+                  data-thread={remoteId}
                 >
                   <ThreadListItemPrimitive.Trigger
                     className="thread-trigger"
-                    onClick={() => setHistoryOpen(false)}
+                    onClick={closeHistory}
                   >
                     <ThreadListItemPrimitive.Title />
                     <ThreadCreated custom={threadListItem.custom} />
                   </ThreadListItemPrimitive.Trigger>
                 </ThreadListItemPrimitive.Root>
-              ) : null
-            }
+              );
+            }}
           </ThreadListPrimitive.Items>
         </div>
       </Overlay>

@@ -265,6 +265,23 @@ button:disabled { opacity: 0.45; cursor: default; }
   overflow: visible;
 }
 
+.history-search-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.history-search::placeholder {
+  color: var(--muted);
+}
+
+.history-search-button {
+  width: auto;
+  padding: 10px 14px;
+}
+
 .who {
   display: flex;
   align-items: center;
