@@ -153,6 +153,10 @@ dist/
 coverage/
 .DS_Store
 
+# Langfuse Postgres, ClickHouse, MinIO, and Redis. Lives on the host so a
+# Docker machine rebuild does not wipe traces.
+.langfuse-data/
+
 # Environments
 .env
 .envrc
