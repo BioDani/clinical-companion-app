@@ -13,9 +13,12 @@ from .user_memory import MemoryStore, store_field
 
 INTAKE_START = "INTAKE_START"
 NOTICE = (
-    "Sharing these answers is optional. "
-    "This companion is not a diagnostic device. "
-    "These answers are not used to train a model."
+    "Hi, I’m wellnest, your wellness companion 👋\n"
+    "To give you more relevant answers, you can choose to share a bit about yourself, "
+    "like health conditions or daily habits. This is completely optional, and anything "
+    "you share will be used only to tailor my answers to you.\n"
+    "Your information is kept safe and handled according to our Privacy Policy. "
+    "It will never be used to train AI models."
 )
 CLOSE = "Thank you. I will use what you chose to share on later habit questions."
 

@@ -60,7 +60,7 @@ export const HEALTH_INTRODUCTION = "Health introduction";
 const INTAKE_CLOSE = "Thank you. I will use what you chose to share on later habit questions.";
 
 const INTAKE_HINTS = [
-  "Sharing these answers is optional.",
+  "I’m wellnest, your wellness companion",
   "What is your age?",
   "What is your weight?",
   "What is your height?",

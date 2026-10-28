@@ -187,7 +187,10 @@ def test_intake_routes_list_and_delete_for_the_token_subject():
     body = client.get("/intake", headers=header).json()
     assert body["status"] == "pending"
     assert body["next_field"] == "age"
-    assert "not a diagnostic device" in body["notice"]
+    assert body["notice"] is not None
+    assert "wellnest" in body["notice"]
+    assert "optional" in body["notice"]
+    assert "never be used to train" in body["notice"]
     handle_intake(store, "user-1", "42")
     listed = client.get("/memories", headers=header).json()["items"]
     assert listed[0]["text"] == "Age: 42"
@@ -212,9 +215,9 @@ def test_middleware_ends_the_turn_with_the_notice():
     assert result is not None
     assert result["jump_to"] == "end"
     text = result["messages"][0].content
+    assert "wellnest" in text
     assert "optional" in text
-    assert "not a diagnostic device" in text
-    assert "not used to train a model" in text
+    assert "never be used to train" in text
     assert "What is your age?" in text
     assert "BMI" not in text
     assert CLOSE not in text

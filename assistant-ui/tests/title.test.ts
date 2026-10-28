@@ -15,7 +15,7 @@ describe("history titles", () => {
   it("names an introduction-only chat for the health conversation", () => {
     const title = historyTitle([
       assistant(
-        "Sharing these answers is optional. This companion is not a diagnostic device. These answers are not used to train a model.\n\nWhat is your age?",
+        "Hi, I’m wellnest, your wellness companion 👋\nTo give you more relevant answers, you can choose to share a bit about yourself, like health conditions or daily habits. This is completely optional, and anything you share will be used only to tailor my answers to you.\nYour information is kept safe and handled according to our Privacy Policy. It will never be used to train AI models.\n\nWhat is your age?",
       ),
       user("42"),
       assistant("How many hours do you sleep at night?"),
