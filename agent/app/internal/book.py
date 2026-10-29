@@ -21,21 +21,31 @@ def _tokens(text: str) -> set[str]:
     return {word for word in _TOKEN.findall(text.lower()) if len(word) > 2}
 
 
+def list_knowledge_pdfs(root: Path | None = None) -> list[Path]:
+    """Return the knowledge PDFs in filename order, or [] when the folder is empty."""
+    folder = root or _KNOWLEDGE
+    if not folder.is_dir():
+        return []
+    return sorted(path for path in folder.glob("*.pdf") if path.is_file())
+
+
 def knowledge_pdfs(root: Path | None = None) -> list[Path]:
     """Return the knowledge PDFs in filename order."""
     folder = root or _KNOWLEDGE
     if not folder.is_dir():
         raise FileNotFoundError(f"Knowledge folder not found: {folder}")
-    pdfs = sorted(path for path in folder.glob("*.pdf") if path.is_file())
+    pdfs = list_knowledge_pdfs(root)
     if not pdfs:
         raise FileNotFoundError(f"No PDFs in {folder}")
     return pdfs
 
 
 def corpus_fingerprint(root: Path | None = None) -> str:
-    """Hash each knowledge PDF so an unchanged folder can skip ingest."""
+    """Hash each included knowledge PDF so an unchanged set can skip ingest."""
+    from .inclusion import included_pdfs
+
     digest = hashlib.sha256()
-    for path in knowledge_pdfs(root):
+    for path in included_pdfs(root):
         digest.update(path.name.encode("utf-8"))
         digest.update(b"\0")
         digest.update(path.read_bytes())

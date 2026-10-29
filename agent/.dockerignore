@@ -3,5 +3,8 @@ __pycache__
 *.pyo
 .git
 .env
+.env*
+*.log*
+coverage/
 .venv
 .pytest_cache

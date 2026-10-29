@@ -14,6 +14,7 @@ HEALTH_DOMAINS = [
     "medlineplus.gov",
     "realfood.gov",
     "usda.gov",
+    "heart.org",
 ]
 
 

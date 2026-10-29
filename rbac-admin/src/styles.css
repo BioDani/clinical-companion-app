@@ -99,6 +99,7 @@ input:focus, select:focus { outline: 2px solid var(--accent); border-color: tran
 .btn:disabled { opacity: 0.6; cursor: default; }
 
 .form-error { color: var(--danger); font-size: 13px; margin: 8px 0 0; }
+.status { color: var(--success); margin: 8px 0 0; }
 
 .shell { display: flex; min-height: 100vh; }
 
@@ -317,6 +318,17 @@ td { padding: 10px 16px; border-top: 1px solid var(--border); vertical-align: mi
 }
 
 .banner { color: var(--danger); margin: 12px 0; }
+
+.indexed {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--text);
+  font-size: 14px;
+}
+
+.indexed input { margin: 0; }
 
 @media (max-width: 900px) {
   .stats, .role-grid { grid-template-columns: 1fr 1fr; }

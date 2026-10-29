@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import jwt_secret, langfuse_enabled
 from .internal.vector_store import ensure_indexed
-from .routers import health, openai
+from .routers import health, knowledge, openai
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +58,7 @@ app.add_middleware(
 )
 
 app.include_router(health.router)
+app.include_router(knowledge.router)
 app.include_router(openai.router)
 
 

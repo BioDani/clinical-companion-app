@@ -22,8 +22,14 @@ async def generate_checkpointer():
         yield saver
 
 
+_memory_store = None
+
+
 def open_memory_store():
     """Process-wide store of personal notes. The connection stays on its loop."""
+    global _memory_store
+    if _memory_store is not None:
+        return _memory_store
     import asyncio
     import threading
 
@@ -39,4 +45,5 @@ def open_memory_store():
         await store.setup()
         return store
 
-    return asyncio.run_coroutine_threadsafe(_open(), loop).result()
+    _memory_store = asyncio.run_coroutine_threadsafe(_open(), loop).result()
+    return _memory_store

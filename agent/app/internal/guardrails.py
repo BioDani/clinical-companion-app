@@ -24,7 +24,13 @@ from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.runtime import Runtime
 from langgraph.types import Command
 
-from .bmi import BmiTool
+from .bmi import (
+    BmiTool,
+    INVALID_MEASUREMENTS,
+    NEED_BOTH,
+    NEED_HEIGHT,
+    NEED_WEIGHT,
+)
 from .web_search import format_search_results, format_source_links
 
 # Scope, relevance, rewrite, grounding, and safety calls are not the reply.
@@ -119,8 +125,21 @@ _INJECTION = re.compile(
 )
 _DOSE = re.compile(r"\b\d+(?:[.,]\d+)?\s*(?:mg|mcg|ml|iu)\b", re.IGNORECASE)
 _DOSE_QUESTION = re.compile(r"\b(?:dose|doses|dosis|dosage|dosages)\b", re.IGNORECASE)
+_DRUG_NAME = re.compile(
+    r"\b(?:insulin|medications?|medicines?|drugs?|prescriptions?|"
+    r"pills?|tablets?|capsules?|injections?)\b",
+    re.IGNORECASE,
+)
+_AMOUNT_REQUEST = re.compile(
+    r"\bhow (?:much|many)\b|\bshould take\b",
+    re.IGNORECASE,
+)
 _SENTENCE = re.compile(r"(?<=[.!?])\s+")
-_PHONE = r"(?:\+?\d{1,3}[\s.-]?)?(?:\(\d{3}\)[\s.-]?|\d{3}[\s.-])\d{3}[\s.-]\d{4}|\b\d{10}\b"
+_PHONE = re.compile(
+    r"(?:\+?\d{1,3}[\s.-]?)?(?:\(\d{3}\)[\s.-]?|\d{3}[\s.-])\d{3}[\s.-]\d{4}|\b\d{10}\b"
+)
+_URL = re.compile(r"https?://[^\s)]+")
+_FILENAME_NUMBER = re.compile(r"\b\d{10}(?=\.[A-Za-z]{2,5}\b)")
 
 SAFETY_PROMPT = (
     "Evaluate if this response is safe and appropriate for Wellnest. "
@@ -156,18 +175,44 @@ def latest_human(state: AgentState) -> str:
     return ""
 
 
-def _blocked_reply(user_text: str) -> str | None:
+def _blocked_reply(user_text: str, remembered: str = "") -> str | None:
     text = user_text.lower()
     if any(phrase in text for phrase in _DANGEROUS):
         return REFUSAL
     if any(phrase in text for phrase in _TREATMENT):
         return HABIT_BOUNDARY
-    if _DOSE_QUESTION.search(user_text) or _DOSE.search(user_text):
+    if (
+        _DOSE_QUESTION.search(user_text)
+        or _DOSE.search(user_text)
+        or _medication_amount(user_text)
+    ):
         return HABIT_BOUNDARY
-    reading = BmiTool().from_text(user_text)
+    reading = BmiTool().respond(user_text, remembered)
     if reading:
         return reading
     return None
+
+
+def _remembered_measurements(runtime: Runtime) -> str:
+    from .user_memory import measurement_notes, store_from_runtime, user_id_from_runtime
+
+    store = store_from_runtime(runtime)
+    user_id = user_id_from_runtime(runtime)
+    if store is None or not user_id:
+        return ""
+    return measurement_notes(store, user_id)
+
+
+def _medication_amount(user_text: str) -> bool:
+    """A request for how much of a drug to take, in either word order.
+
+    "How much insulin I should take" never contains the substring "should i take".
+    Plain "how much" stays a habit question when no drug is named.
+    """
+    return (
+        _DRUG_NAME.search(user_text) is not None
+        and _AMOUNT_REQUEST.search(user_text) is not None
+    )
 
 
 def _medication_sentence(sentence: str) -> bool:
@@ -243,10 +288,10 @@ def _rewrite_tool_result(result: ToolMessage | Command) -> ToolMessage | Command
 
 
 class ContentFilterMiddleware(AgentMiddleware):
-    """Block diagnosis, treatment, doses, and complete BMI readings before the model."""
+    """Block diagnosis, treatment, doses, and BMI requests before the model."""
 
-    def _filter(self, state: AgentState) -> dict[str, Any] | None:
-        reply = _blocked_reply(latest_human(state))
+    def _filter(self, state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
+        reply = _blocked_reply(latest_human(state), _remembered_measurements(runtime))
         if reply is None:
             return None
         return {
@@ -259,19 +304,40 @@ class ContentFilterMiddleware(AgentMiddleware):
     def before_agent(
         self, state: AgentState, runtime: Runtime
     ) -> dict[str, Any] | None:
-        return self._filter(state)
+        return self._filter(state, runtime)
 
     @hook_config(can_jump_to=["end"])
     async def abefore_agent(
         self, state: AgentState, runtime: Runtime
     ) -> dict[str, Any] | None:
-        return self._filter(state)
+        return self._filter(state, runtime)
+
+
+def detect_phone(content: str) -> list[dict[str, Any]]:
+    """Phone numbers, leaving source URLs and PDF file names intact.
+
+    A WHO ISBN such as 9241546123.pdf is ten digits. The bare ten-digit rule
+    would replace it inside the passage label and the public PDF link.
+    """
+    text = content or ""
+    protected = [match.span() for match in _URL.finditer(text)]
+    found: list[dict[str, Any]] = []
+    for match in _PHONE.finditer(text):
+        start, end = match.span()
+        if any(left <= start and end <= right for left, right in protected):
+            continue
+        filename = _FILENAME_NUMBER.match(text, start)
+        if filename is not None and filename.end() == end:
+            continue
+        found.append({"value": match.group(), "start": start, "end": end})
+    return found
 
 
 def pii_middleware() -> list[PIIMiddleware]:
     """Redact or mask PII on input, output, and tool results.
 
-    URL detection stays off so Tavily source links remain in the reply.
+    URL detection stays off. Phone detection also skips source URLs and PDF
+    file names so a 10-digit ISBN stays in the citation link.
     """
     shared = {
         "apply_to_input": True,
@@ -281,7 +347,7 @@ def pii_middleware() -> list[PIIMiddleware]:
     return [
         PIIMiddleware("email", strategy="redact", **shared),
         PIIMiddleware("credit_card", strategy="mask", **shared),
-        PIIMiddleware("phone", detector=_PHONE, strategy="redact", **shared),
+        PIIMiddleware("phone", detector=detect_phone, strategy="redact", **shared),
     ]
 
 
@@ -315,6 +381,10 @@ def _skip_safety(text: str) -> bool:
         INTRODUCTION,
         OUT_OF_SCOPE,
         NOT_COVERED,
+        NEED_BOTH,
+        NEED_WEIGHT,
+        NEED_HEIGHT,
+        INVALID_MEASUREMENTS,
     } or stripped.startswith("BMI ")
 
 
@@ -331,6 +401,8 @@ class SafetyGuardrailMiddleware(AgentMiddleware):
             return None
         last_message = messages[-1]
         if not isinstance(last_message, AIMessage):
+            return None
+        if (getattr(last_message, "additional_kwargs", None) or {}).get("intake"):
             return None
         content = _text(last_message.content).strip()
         if not content or _skip_safety(content):

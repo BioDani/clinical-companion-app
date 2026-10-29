@@ -14,8 +14,22 @@ import { loadSession } from "./session";
 
 type ListedThread = {
   thread_id: string;
+  created_at?: string;
   metadata?: Record<string, unknown> | null;
 };
+
+/** Creation time stored on a history row. Null when the thread has no stamp. */
+export function historyCreatedAt(custom: Record<string, unknown> | undefined): Date | null {
+  const value = custom?.createdAt;
+  if (typeof value !== "string") return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function threadCustom(createdAt: string | undefined): { createdAt: string } | undefined {
+  const date = historyCreatedAt(createdAt ? { createdAt } : undefined);
+  return date ? { createdAt: date.toISOString() } : undefined;
+}
 
 function threadTitle(metadata: Record<string, unknown> | null | undefined): string | undefined {
   const title = metadata?.title;
@@ -41,6 +55,134 @@ function lastHumanText(messages: readonly LangChainMessage[]): string {
 
 const EVIDENCE_PREFIX = "Use only the evidence below.";
 
+export const HEALTH_INTRODUCTION = "Health introduction";
+
+const INTAKE_CLOSE = "Thank you. I will use what you chose to share on later habit questions.";
+
+const INTAKE_HINTS = [
+  "I’m wellnest, your wellness companion",
+  "What is your age?",
+  "What is your weight?",
+  "What is your height?",
+  "How many hours do you sleep at night?",
+  "How many meals do you eat per day?",
+  "What kind of diet do you follow?",
+  "Is there a condition that should change suggestions",
+  INTAKE_CLOSE,
+];
+
+type TitleMessage = {
+  role: string;
+  content: string | readonly { type: string; text?: string }[];
+};
+
+function titleText(message: TitleMessage): string {
+  const content = message.content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.map((part) => (part.type === "text" ? part.text ?? "" : "")).join("");
+}
+
+function intakeAssistant(text: string): boolean {
+  return INTAKE_HINTS.some((hint) => text.includes(hint));
+}
+
+/** Short history name from the visible conversation. Empty when the chat has no subject yet. */
+export function historyTitle(messages: readonly TitleMessage[]): string {
+  let expectingAnswer = false;
+  let closed = false;
+  let habit = "";
+  for (const message of messages) {
+    const text = titleText(message).trim();
+    if (!text || text === "INTAKE_START") continue;
+    const role = message.role;
+    if (role === "assistant" || role === "ai") {
+      if (!intakeAssistant(text)) {
+        expectingAnswer = false;
+        continue;
+      }
+      closed = text.includes(INTAKE_CLOSE);
+      expectingAnswer = !closed;
+      continue;
+    }
+    if (role !== "user" && role !== "human") continue;
+    if (expectingAnswer) {
+      expectingAnswer = false;
+      continue;
+    }
+    if (!habit) habit = text.slice(0, 80);
+  }
+  if (habit) return habit;
+  if (closed) return HEALTH_INTRODUCTION;
+  return "";
+}
+
+type HistoryRow = {
+  status: "regular";
+  remoteId: string;
+  externalId: string;
+  title: string;
+  custom?: { createdAt: string };
+};
+
+type RememberedThread = {
+  title: string;
+  custom?: { createdAt: string };
+};
+
+const rememberedThreads = new Map<string, RememberedThread>();
+const pendingTitleWrites = new Set<Promise<void>>();
+
+/** Threads titled in this session, kept when a history reload has not caught up. */
+export function withRememberedThreads(
+  listed: readonly HistoryRow[],
+  remembered: ReadonlyMap<string, RememberedThread> = rememberedThreads,
+): HistoryRow[] {
+  const seen = new Set(listed.map((thread) => thread.remoteId));
+  const missing: HistoryRow[] = [];
+  for (const [remoteId, saved] of remembered) {
+    if (seen.has(remoteId) || !saved.title.trim()) continue;
+    missing.push({
+      status: "regular",
+      remoteId,
+      externalId: remoteId,
+      title: saved.title,
+      custom: saved.custom,
+    });
+  }
+  return [...missing, ...listed];
+}
+
+/** Resolves when every in-flight title save has finished. */
+export function whenThreadTitlesSettled(): Promise<void> {
+  return Promise.all([...pendingTitleWrites]).then(() => undefined);
+}
+
+export async function writeThreadTitle(remoteId: string, title: string): Promise<void> {
+  const task = persistThreadTitle(remoteId, title);
+  const settled = task.then(
+    () => undefined,
+    () => undefined,
+  );
+  pendingTitleWrites.add(settled);
+  void settled.finally(() => pendingTitleWrites.delete(settled));
+  return task;
+}
+
+async function persistThreadTitle(remoteId: string, title: string): Promise<void> {
+  const client = createClient();
+  const current = await client.threads.get(remoteId);
+  if (current.metadata?.title !== title) {
+    await client.threads.update(remoteId, {
+      metadata: { ...(current.metadata ?? {}), title },
+    });
+  }
+  rememberedThreads.set(remoteId, {
+    title,
+    custom: threadCustom(current.created_at),
+  });
+}
+
 const INTERNAL_LABELS = new Set([
   "GREETING",
   "IN_SCOPE",
@@ -48,6 +190,7 @@ const INTERNAL_LABELS = new Set([
   "SAFE",
   "UNSAFE",
   "NONE",
+  "INTAKE_START",
   "GROUNDED",
   "UNGROUNDED",
 ]);
@@ -60,6 +203,31 @@ export function isVisibleTranscriptMessage(message: LangChainMessage): boolean {
   if (INTERNAL_LABELS.has(text) || RELEVANCE_LABEL.test(text)) return false;
   if (text.startsWith(EVIDENCE_PREFIX)) return false;
   return true;
+}
+
+/** Visible message text a history search may match. Titles are not included. */
+export function visibleSearchTexts(messages: readonly LangChainMessage[]): string[] {
+  return messages.flatMap((message) => {
+    if (!isVisibleTranscriptMessage(message)) return [];
+    const text = messageText(message).trim();
+    return text ? [text] : [];
+  });
+}
+
+/** Read one titled thread's visible text. The query is not sent. A failed read is empty. */
+export async function loadVisibleSearchTexts(
+  threadId: string,
+  onUnauthorized: () => void,
+): Promise<string[]> {
+  try {
+    const state = await createClient().threads.getState<{
+      messages?: LangChainMessage[];
+    }>(threadId);
+    return visibleSearchTexts(state.values.messages ?? []);
+  } catch (error) {
+    if (statusOf(error) === 401) onUnauthorized();
+    return [];
+  }
 }
 
 function visibleStreamData(data: unknown): unknown {
@@ -90,18 +258,6 @@ function statusOf(error: unknown): number | undefined {
     if (typeof status === "number") return status;
   }
   return undefined;
-}
-
-function firstMessageTitle(
-  messages: readonly { role: string; content: readonly { type: string; text?: string }[] }[],
-): string {
-  for (const message of messages) {
-    if (message.role !== "user") continue;
-    for (const part of message.content) {
-      if (part.type === "text" && part.text?.trim()) return part.text.trim().slice(0, 80);
-    }
-  }
-  return "";
 }
 
 /**
@@ -168,20 +324,20 @@ function threadListAdapter(onUnauthorized: () => void): RemoteThreadListAdapter 
           sortBy: "updated_at",
           sortOrder: "desc",
         })) as ListedThread[];
-        return {
-          threads: threads.flatMap((thread) => {
-            const title = threadTitle(thread.metadata);
-            if (!title) return [];
-            return [
-              {
-                status: "regular" as const,
-                remoteId: thread.thread_id,
-                externalId: thread.thread_id,
-                title,
-              },
-            ];
-          }),
-        };
+        const listed = threads.flatMap((thread) => {
+          const title = threadTitle(thread.metadata);
+          if (!title) return [];
+          return [
+            {
+              status: "regular" as const,
+              remoteId: thread.thread_id,
+              externalId: thread.thread_id,
+              title,
+              custom: threadCustom(thread.created_at),
+            },
+          ];
+        });
+        return { threads: withRememberedThreads(listed) };
       } catch (error) {
         if (statusOf(error) === 401) onUnauthorized();
         throw error;
@@ -199,14 +355,15 @@ function threadListAdapter(onUnauthorized: () => void): RemoteThreadListAdapter 
           remoteId: thread.thread_id,
           externalId: thread.thread_id,
           title: threadTitle(thread.metadata as Record<string, unknown> | undefined),
+          custom: threadCustom(thread.created_at),
         };
       } catch (error) {
         if (statusOf(error) === 401) onUnauthorized();
         throw error;
       }
     },
-    async rename() {
-      return undefined;
+    async rename(remoteId, newTitle) {
+      await writeThreadTitle(remoteId, newTitle);
     },
     async archive() {
       return undefined;
@@ -218,15 +375,12 @@ function threadListAdapter(onUnauthorized: () => void): RemoteThreadListAdapter 
       return undefined;
     },
     async generateTitle(remoteId, messages) {
-      const title = firstMessageTitle(messages);
-      if (title) {
-        const client = createClient();
-        const current = await client.threads.get(remoteId);
-        await client.threads.update(remoteId, {
-          metadata: { ...(current.metadata ?? {}), title },
-        });
-      }
-      return createAssistantStream(() => undefined);
+      const title = historyTitle(messages);
+      if (!title) return createAssistantStream(() => undefined);
+      await writeThreadTitle(remoteId, title);
+      return createAssistantStream((controller) => {
+        controller.appendText(title);
+      });
     },
   };
 }

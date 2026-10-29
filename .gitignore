@@ -147,10 +147,15 @@ activemq-data/
 # SageMath parsed files
 *.sage.py
 
-# Node (rbac-admin)
+# Node (rbac-admin, assistant-ui)
 node_modules/
+dist/
 coverage/
 .DS_Store
+
+# Langfuse Postgres, ClickHouse, MinIO, and Redis. Lives on the host so a
+# Docker machine rebuild does not wipe traces.
+.langfuse-data/
 
 # Environments
 .env

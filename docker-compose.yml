@@ -67,6 +67,8 @@ services:
     depends_on:
       rbac:
         condition: service_healthy
+      agent:
+        condition: service_healthy
     labels:
       - dev.orbstack.http-port=80
     healthcheck:
@@ -155,6 +157,9 @@ services:
       context: ./agent
     container_name: clinical-companion-agent-index
     environment: *agent-environment
+    volumes:
+      - knowledge-inclusion:/data/knowledge-inclusion
+      - ./agent/knowledge:/app/knowledge
     command: ["python", "-m", "app.internal.index_knowledge"]
     depends_on:
       weaviate:
@@ -168,6 +173,9 @@ services:
     ports:
       - "8000:8000"
     environment: *agent-environment
+    volumes:
+      - knowledge-inclusion:/data/knowledge-inclusion
+      - ./agent/knowledge:/app/knowledge
     labels:
       - dev.orbstack.http-port=8000
     depends_on:
@@ -203,6 +211,8 @@ services:
     environment: *agent-environment
     volumes:
       - companion-state:/data
+      - knowledge-inclusion:/data/knowledge-inclusion
+      - ./agent/knowledge:/app/knowledge
     command:
       - /bin/sh
       - -c
@@ -362,8 +372,11 @@ services:
       CLICKHOUSE_USER: clickhouse
       CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD:?Set LANGFUSE_CLICKHOUSE_PASSWORD in .env}
     volumes:
-      - langfuse_clickhouse_data:/var/lib/clickhouse
-      - langfuse_clickhouse_logs:/var/log/clickhouse-server
+      # Host directory so a Docker machine rebuild keeps traces.
+      # user 101:101 must stay: ClickHouse cannot reread this directory
+      # after a restart when the process starts as root.
+      - ./.langfuse-data/clickhouse:/var/lib/clickhouse
+      - ./.langfuse-data/clickhouse-logs:/var/log/clickhouse-server
     healthcheck:
       test: wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1
       interval: 5s
@@ -382,7 +395,7 @@ services:
       MINIO_ROOT_USER: minio
       MINIO_ROOT_PASSWORD: ${LANGFUSE_MINIO_ROOT_PASSWORD:?Set LANGFUSE_MINIO_ROOT_PASSWORD in .env}
     volumes:
-      - langfuse_minio_data:/data
+      - ./.langfuse-data/minio:/data
     healthcheck:
       test: ["CMD", "mc", "ready", "local"]
       interval: 5s
@@ -401,7 +414,7 @@ services:
     environment:
       REDISCLI_AUTH: ${LANGFUSE_REDIS_AUTH:?Set LANGFUSE_REDIS_AUTH in .env}
     volumes:
-      - langfuse_redis_data:/data
+      - ./.langfuse-data/redis:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 3s
@@ -420,7 +433,7 @@ services:
       TZ: UTC
       PGTZ: UTC
     volumes:
-      - langfuse_postgres_data:/var/lib/postgresql/data
+      - ./.langfuse-data/postgres:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 3s
@@ -431,9 +444,5 @@ volumes:
   open-webui-data:
   rbac-data:
   weaviate_data:
-  langfuse_postgres_data:
-  langfuse_clickhouse_data:
-  langfuse_clickhouse_logs:
-  langfuse_minio_data:
-  langfuse_redis_data:
   companion-state:
+  knowledge-inclusion:

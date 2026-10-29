@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { AssistantRuntimeProvider } from "@assistant-ui/core/react";
 import {
   ComposerPrimitive,
@@ -6,9 +6,15 @@ import {
   ThreadListItemPrimitive,
   ThreadListPrimitive,
   ThreadPrimitive,
+  useAui,
   useAuiState,
 } from "@assistant-ui/react";
 import { physicianNotice, shouldStartRun } from "../composer";
+import {
+  comparedHistoryQuery,
+  historySearchActive,
+  messageMatchesQuery,
+} from "../historySearch";
 import { linkParts } from "../links";
 import {
   parseInlines,
@@ -18,7 +24,14 @@ import {
   type Inline,
 } from "../markdown";
 import { formatMessageTime, rememberedMessageTime, rememberMessageTime } from "../messageTime";
-import { useCompanionRuntime } from "../runtime";
+import {
+  historyCreatedAt,
+  historyTitle,
+  loadVisibleSearchTexts,
+  useCompanionRuntime,
+  whenThreadTitlesSettled,
+} from "../runtime";
+import { loadSession } from "../session";
 
 type HomeProps = {
   onSignOut: () => void;
@@ -32,11 +45,199 @@ export function Home({ onSignOut, username }: HomeProps) {
       <div className="home">
         <AssistantSidebar onSignOut={onSignOut} username={username} />
         <section className="pane">
+          <IntakeSeed onUnauthorized={onSignOut} />
+          <HistoryTitle />
           <Thread />
           <p className="notice">{physicianNotice}</p>
         </section>
       </div>
     </AssistantRuntimeProvider>
+  );
+}
+
+type MemoryItem = { id: string; text: string; field: string | null };
+
+function authHeader(): { Authorization: string } | null {
+  const session = loadSession();
+  if (!session) return null;
+  return { Authorization: `Bearer ${session.token}` };
+}
+
+function IntakeSeed({ onUnauthorized }: { onUnauthorized: () => void }) {
+  const aui = useAui();
+  const messageCount = useAuiState((state) => state.thread.messages.length);
+  const remoteId = useAuiState((state) => state.threadListItem.remoteId);
+  const seededFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (messageCount > 0) return;
+    const mark = remoteId ?? "new";
+    if (seededFor.current === mark) return;
+    const headers = authHeader();
+    if (!headers) return;
+    let cancelled = false;
+    seededFor.current = mark;
+    void (async () => {
+      const response = await fetch("/api/intake", { headers });
+      if (response.status === 401) {
+        onUnauthorized();
+        return;
+      }
+      if (!response.ok || cancelled) return;
+      const body = (await response.json()) as { status?: string; next_field?: string | null };
+      if (cancelled || body.status !== "pending" || body.next_field !== "age") return;
+      aui.thread().append("INTAKE_START");
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [aui, messageCount, onUnauthorized, remoteId]);
+  return null;
+}
+
+function HistoryTitle() {
+  const aui = useAui();
+  const remoteId = useAuiState((state) => state.threadListItem.remoteId);
+  const signature = useAuiState((state) => state.thread.messages.map((message) => message.id).join("|"));
+  const written = useRef("");
+  useEffect(() => {
+    if (!remoteId) return;
+    const messages = aui.thread().getState().messages.map((message) => ({
+      role: message.role,
+      content: message.content,
+    }));
+    const title = historyTitle(messages);
+    if (!title || title === written.current) return;
+    written.current = title;
+    try {
+      void aui.threadListItem().rename(title);
+    } catch {
+      written.current = "";
+    }
+  }, [aui, remoteId, signature]);
+  return null;
+}
+
+function Overlay({
+  open,
+  title,
+  onClose,
+  children,
+}: {
+  open: boolean;
+  title: string;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const titleId = useId();
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    if (open) {
+      if (!dialog.open) dialog.showModal();
+      return;
+    }
+    if (dialog.open) dialog.close();
+  }, [open]);
+
+  return (
+    <dialog
+      ref={dialogRef}
+      className="overlay"
+      aria-labelledby={titleId}
+      onCancel={(event) => {
+        event.preventDefault();
+        onCloseRef.current();
+      }}
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onCloseRef.current();
+      }}
+    >
+      <div className="overlay-panel">
+        <header className="overlay-header">
+          <h2 id={titleId}>{title}</h2>
+          <button type="button" className="overlay-close" onClick={() => onCloseRef.current()} aria-label="Close">
+            Close
+          </button>
+        </header>
+        <div className="overlay-body">{children}</div>
+      </div>
+    </dialog>
+  );
+}
+
+function Memories({ onUnauthorized }: { onUnauthorized: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [items, setItems] = useState<MemoryItem[]>([]);
+
+  useEffect(() => {
+    if (!open) return;
+    const headers = authHeader();
+    if (!headers) return;
+    let cancelled = false;
+    void (async () => {
+      const response = await fetch("/api/memories", { headers });
+      if (response.status === 401) {
+        onUnauthorized();
+        return;
+      }
+      if (cancelled) return;
+      if (!response.ok) {
+        setLoaded(true);
+        return;
+      }
+      const body = (await response.json()) as { items: MemoryItem[] };
+      if (cancelled) return;
+      setItems(body.items);
+      setLoaded(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, onUnauthorized]);
+
+  async function remove(id: string) {
+    const headers = authHeader();
+    if (!headers) return;
+    const response = await fetch(`/api/memories/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+      headers,
+    });
+    if (response.status === 401) {
+      onUnauthorized();
+      return;
+    }
+    if (response.ok) setItems((current) => current.filter((item) => item.id !== id));
+  }
+
+  return (
+    <div className="memories">
+      <button type="button" className="sidebar-toggle" aria-haspopup="dialog" onClick={() => setOpen(true)}>
+        <ButtonIcon name="memories" />
+        My memories
+      </button>
+      <Overlay open={open} title="My memories" onClose={() => setOpen(false)}>
+        {!loaded ? <p className="empty">Loading memories…</p> : null}
+        {loaded && items.length === 0 ? <p className="empty">No memories yet.</p> : null}
+        {loaded && items.length > 0 ? (
+          <ul className="memory-list">
+            {items.map((item) => (
+              <li key={item.id} className="memory-row">
+                <span>{item.text}</span>
+                <button type="button">Keep</button>
+                <button type="button" onClick={() => void remove(item.id)}>
+                  Delete
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </Overlay>
+    </div>
   );
 }
 
@@ -59,31 +260,138 @@ function AssistantSidebar({ onSignOut, username }: HomeProps) {
 }
 
 function ThreadList({ onSignOut }: { onSignOut: () => void }) {
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyQuery, setHistoryQuery] = useState("");
+  const [searchTexts, setSearchTexts] = useState<Record<string, string[]>>({});
+  const aui = useAui();
+  const hasHistory = useAuiState((state) =>
+    state.threads.threadItems.some((item) => Boolean(item.title?.trim())),
+  );
+  const titledIds = useAuiState((state) =>
+    state.threads.threadItems
+      .filter((item) => Boolean(item.title?.trim()) && item.remoteId)
+      .map((item) => item.remoteId)
+      .join("|"),
+  );
+  const compared = comparedHistoryQuery(historyQuery);
+  const searchActive = historySearchActive(compared);
+  const closeHistory = () => {
+    setHistoryOpen(false);
+    setHistoryQuery("");
+    setSearchTexts({});
+  };
+  useEffect(() => {
+    if (!historyOpen) return;
+    let cancelled = false;
+    void (async () => {
+      await whenThreadTitlesSettled();
+      if (!cancelled) await aui.threads().reload();
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [aui, historyOpen]);
+  useEffect(() => {
+    if (!historyOpen || !searchActive) return;
+    const ids = titledIds.split("|").filter(Boolean);
+    const missing = ids.filter((id) => searchTexts[id] === undefined);
+    if (missing.length === 0) return;
+    let cancelled = false;
+    void (async () => {
+      const loaded = await Promise.all(
+        missing.map(async (id) => [id, await loadVisibleSearchTexts(id, onSignOut)] as const),
+      );
+      if (cancelled) return;
+      setSearchTexts((current) => {
+        const next = { ...current };
+        for (const [id, texts] of loaded) next[id] = texts;
+        return next;
+      });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [historyOpen, onSignOut, searchActive, searchTexts, titledIds]);
+  const titledIdList = titledIds ? titledIds.split("|") : [];
+  const searchSettled = titledIdList.every((id) => searchTexts[id] !== undefined);
+  const searchHasMatch = titledIdList.some((id) =>
+    (searchTexts[id] ?? []).some((text) => messageMatchesQuery(text, compared)),
+  );
+  const showNothingMatched = hasHistory && searchActive && searchSettled && !searchHasMatch;
   return (
     <ThreadListPrimitive.Root className="thread-list-root">
-      <div className="thread-list">
-        <ThreadListPrimitive.Items>
-          {({ threadListItem }) =>
-            threadListItem.title?.trim() ? (
-              <ThreadListItemPrimitive.Root
-                className="thread-item"
-                data-thread={threadListItem.remoteId}
-              >
-                <ThreadListItemPrimitive.Trigger className="thread-trigger">
-                  <ThreadListItemPrimitive.Title />
-                </ThreadListItemPrimitive.Trigger>
-              </ThreadListItemPrimitive.Root>
-            ) : null
-          }
-        </ThreadListPrimitive.Items>
-      </div>
+      <Memories onUnauthorized={onSignOut} />
+      <button type="button" className="sidebar-toggle" aria-haspopup="dialog" onClick={() => setHistoryOpen(true)}>
+        <ButtonIcon name="history" />
+        History
+      </button>
+      <Overlay open={historyOpen} title="History" onClose={closeHistory}>
+        <form className="history-search-row" onSubmit={(event) => event.preventDefault()}>
+          <input
+            className="history-search"
+            type="search"
+            aria-label="Search chats"
+            placeholder="Search chats"
+            value={historyQuery}
+            onChange={(event) => setHistoryQuery(event.target.value)}
+          />
+          <button type="submit" className="history-search-button">
+            Search
+          </button>
+        </form>
+        <hr className="sidebar-separator" />
+        {hasHistory ? null : <p className="empty">No chats yet.</p>}
+        {showNothingMatched ? <p className="empty">Nothing matched.</p> : null}
+        <div className="thread-list">
+          <ThreadListPrimitive.Items>
+            {({ threadListItem }) => {
+              if (!threadListItem.title?.trim()) return null;
+              const remoteId = threadListItem.remoteId;
+              if (searchActive) {
+                const texts = remoteId ? searchTexts[remoteId] : undefined;
+                const matched = (texts ?? []).some((text) => messageMatchesQuery(text, compared));
+                if (!matched) return null;
+              }
+              return (
+                <ThreadListItemPrimitive.Root
+                  className="thread-item"
+                  data-thread={remoteId}
+                >
+                  <ThreadListItemPrimitive.Trigger
+                    className="thread-trigger"
+                    onClick={closeHistory}
+                  >
+                    <ThreadListItemPrimitive.Title />
+                    <ThreadCreated custom={threadListItem.custom} />
+                  </ThreadListItemPrimitive.Trigger>
+                </ThreadListItemPrimitive.Root>
+              );
+            }}
+          </ThreadListPrimitive.Items>
+        </div>
+      </Overlay>
+      <hr className="sidebar-separator" />
       <div className="sidebar-actions">
-        <ThreadListPrimitive.New className="new-chat">New chat</ThreadListPrimitive.New>
+        <ThreadListPrimitive.New className="new-chat">
+          <ButtonIcon name="new" />
+          New chat
+        </ThreadListPrimitive.New>
         <button type="button" className="sign-out" onClick={onSignOut}>
+          <ButtonIcon name="sign-out" />
           Sign out
         </button>
       </div>
     </ThreadListPrimitive.Root>
+  );
+}
+
+function ThreadCreated({ custom }: { custom?: Record<string, unknown> }) {
+  const created = historyCreatedAt(custom);
+  if (!created) return null;
+  return (
+    <time className="thread-created" dateTime={created.toISOString()}>
+      {formatMessageTime(created)}
+    </time>
   );
 }
 
@@ -193,6 +501,7 @@ function UserMessage() {
   const createdAt = useAuiState((state) => state.message.createdAt);
   const live = useAuiState((state) => isLiveMessage(state));
   const time = useVisitTime(id, createdAt, live);
+  if (text.trim() === "INTAKE_START") return null;
   return (
     <MessagePrimitive.Root className="message message-user">
       <LinkedText text={text} />
@@ -281,15 +590,33 @@ function HiddenMessage() {
   return null;
 }
 
+function ButtonIcon({ name }: { name: "memories" | "history" | "new" | "send" | "sign-out" }) {
+  return (
+    <svg className="button-icon" viewBox="0 0 24 24" aria-hidden="true">
+      {name === "memories" ? (
+        <path d="M7 3h8l5 5v13H7zM15 3v5h5M9 13h6M9 17h6" />
+      ) : null}
+      {name === "history" ? <path d="M12 8v5l3 2M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18" /> : null}
+      {name === "new" ? <path d="M12 5v14M5 12h14" /> : null}
+      {name === "send" ? <path d="M4 12 20 4l-6 16-2.2-6.2L4 12z" /> : null}
+      {name === "sign-out" ? <path d="M10 7V4h10v16H10v-3M4 12h11M12 9l3 3-3 3" /> : null}
+    </svg>
+  );
+}
+
 function Composer() {
   const text = useAuiState((state) => state.thread.composer.text);
   return (
     <ComposerPrimitive.Root className="composer">
       <ComposerPrimitive.Input placeholder="Message" rows={2} />
       {shouldStartRun(text) ? (
-        <ComposerPrimitive.Send className="send">Send</ComposerPrimitive.Send>
+        <ComposerPrimitive.Send className="send">
+          <ButtonIcon name="send" />
+          Send
+        </ComposerPrimitive.Send>
       ) : (
         <button type="button" className="send" disabled>
+          <ButtonIcon name="send" />
           Send
         </button>
       )}
